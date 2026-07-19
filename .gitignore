@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Build artifacts (Nuitka / pysidedeploy)
+deployment/
+pyside_app_demo.dist/
+pysidedeploy.spec
