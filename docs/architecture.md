@@ -41,7 +41,7 @@
 7. `scene_revision` 在任何影响结果的编辑发生时立即递增，不防抖。
 8. 失败、取消或过期结果不能覆盖 `last_successful_result`；旧图可继续预览和复制，但必须标记为 stale。
 9. 多项场景采用原子语义：任一 item 失败、不可见或资源超限，本次场景整体失败。
-10. 先完成结构验证、分类和视口解析，再构造完整资源预算；任何采样或渲染前必须通过预算验证。
+10. 先完成结构验证和分类；视口解析若需要数值探测，必须先通过独立、集中配置且有硬上限的探测预算。得到 `ResolvedViewport` 后构造完整 RenderPlan 并验证最终预算；任何正式采样或渲染前必须通过该最终预算。
 11. 原始用户文本和 OCR 文本不能直接进入可执行式解析器或宽松通用解析器。
 12. PNG bytes、数值数组和元数据的所有权必须明确；Qt GUI 对象不跨入 RenderActor。
 
@@ -114,7 +114,7 @@ PlotSceneRequest
 ├─ items: tuple[PlotItemRequest, ...]
 ├─ viewport: ViewportRequest
 ├─ image_width / image_height / dpi
-├─ show_grid / show_legend / aspect_request
+├─ show_grid / show_legend
 └─ created_at
 
 PlotItemRequest
@@ -134,7 +134,7 @@ PlotItemRequest
 
 * `mode`：auto 或 manual；
 * 可选的 x/y 边界；
-* 坐标比例请求：auto 或 equal。
+* `aspect_request`：auto 或 equal。
 
 `ResolvedViewport` 表示最终绘图范围：
 
@@ -144,6 +144,10 @@ PlotItemRequest
 * 记录自动推导或手动来源。
 
 Engine 及采样器不接收含缺失边界或 auto 语义的混合 `Viewport`。
+
+`aspect_request` 只属于 `ViewportRequest`，不在 `PlotSceneRequest` 另存一份。它与范围共同定义一套场景级坐标变换，天然由全部 items 共享；修改 `viewport.aspect_request` 与修改其他视口字段一样立即递增 `scene_revision`。M1.6 仍只有一套共享坐标轴，不能为单个 item 覆盖该值。
+
+显函数自动 y 范围属于视口解析，不得在 sampler 或 renderer 中静默改写用户请求。手动四边界优先；自动推导失败时使用 PRD 规定的产品回退。若自动推导需要对已验证显函数做数值探测，探测规模必须先通过集中限制和探测预算，探测结果只用于形成 `ResolvedViewport`，不能绕过最终 RenderPlan 预算。
 
 ### 5.3 已验证规范
 
@@ -184,6 +188,8 @@ Spec 不用“多个可空字段 + 布尔标志”模拟联合类型。可以用
 
 不得在 item 尚未分类或视口尚未解析时计算完整资源预算。请求级早期检查只处理字符数、item 数、输出参数等无需分类即可判断的限制。
 
+M1 的单项场景已经使用 `RenderPlanBuilder` 和 `budget_validator`：阶段 8 首次实现单项 `ResolvedViewport` 解析、RenderPlan 构建和正式采样前预算门禁。M1.6 只扩展多项样式分配、场景总预算和逐项错误映射，不能把这套能力的首次实现延后到多项阶段。
+
 ### 5.5 结果模型
 
 `PlotItemResult` 至少包含 `item_id`、规范化输入、确定的 `plot_kind`、已分配样式、警告、可见分支/片段元数据和可选 `ErrorInfo`。
@@ -216,6 +222,8 @@ PlotSceneRequest
    → plot_classifier
    → typed validator
 → PlotSceneSpec
+→ viewport resolver
+   → 可选的受预算数值探测
 → ResolvedViewport
 → RenderPlanBuilder
 → budget_validator
@@ -255,7 +263,7 @@ tokenizer 只识别当前版本白名单内的数字、x/y、pi/E、函数、运
 
 单独表达式、`y=rhs(x)`，以及等号一侧恰为 `y` 的 `lhs(x)=y` 可成为 `EXPLICIT_FUNCTION`。不做通用移项或 `solve()`；例如 `y+1=x+2` 不作为显函数快捷变换。
 
-显函数采样处理标量返回、定义域外点、NaN、无穷大、渐近线断线和密集振荡警告。
+显函数采样处理标量返回、定义域外点、NaN、无穷大、渐近线断线和密集振荡警告。密集振荡不得声称精确统计任意函数的“周期数”；阶段 8 应基于受预算采样序列定义可测代理指标，并把指标、阈值和验收样例写入 `docs/supported-formulas.md`。
 
 ### 7.2 一般直线
 
@@ -337,6 +345,8 @@ RENDERING
 SHUTTING_DOWN
 ```
 
+六值枚举表达的是唯一的用户可见前台活动。首版 AppController 不同时启动截图/OCR 与绘图；冲突操作在另一任务活动时被禁用或明确拒绝。RenderActor 与 RecognitionWorker 可以同时常驻且生命周期分离，但这不表示首版允许两个前台任务并发。未来若要允许真正并发，必须先以新决策把状态改为可表达正交活动的模型。
+
 “就绪”和“错误”不是 TaskPhase。错误是 `last_error_notice`；ready 是派生状态。
 
 AppController 保存的核心状态：
@@ -361,7 +371,7 @@ result_is_stale = (
 is_ready = task_phase == IDLE and has_plot_result and not result_is_stale
 ```
 
-输入文本修改、item 添加/删除/重排、视口、图片尺寸、网格显示、坐标比例或任何影响结果的显示配置变化，都立即递增 `scene_revision`。递增操作不防抖；旧结果随即 stale。
+输入文本修改、item 添加/删除/重排、视口（含 `aspect_request`）、图片尺寸、网格显示或任何影响结果的显示配置变化，都立即递增 `scene_revision`。递增操作不防抖；旧结果随即 stale。
 
 `return_phase` 如确有需要，只放入当前截图/OCR 任务上下文，不作为持久结果状态。
 
@@ -423,12 +433,13 @@ M1、M1.5、M1.6 不以缓存为发布阻塞需求。M1.6 先建立 `item_finger
 
 ## 14. 计划目录边界
 
-2026-07-19 的实际仓库仍是早期演示骨架：根目录有 `main.py`、`main_window.py`、`plot_engine.py`、`pyproject.toml`、`.python-version`、`uv.lock` 和既有打包/构建输出目录，尚未形成 `math_drawing_assistant/` 包与 `tests/`。本轮只建立文档基线，不迁移或删除这些代码/产物；其保留、忽略、迁移与清理在阶段 0 经用户批准后处理。
+2026-07-19 的实际仓库仍是早期演示骨架：根目录有 `main.py`、`main_window.py`、`plot_engine.py`、`pyproject.toml`、`.python-version`、`uv.lock` 和既有打包/构建输出目录，尚未形成 `math_drawing_assistant/` 包与 `tests/`。本轮只建立文档基线，不迁移或删除这些代码/产物。阶段 0 默认只盘点并记录保留、忽略、迁移或清理决定；实际移动、删除或改写遗留演示文件必须作为显式批准的独立子任务，并先在清单中扩展准确的允许文件。
 
 下列结构是按阶段逐步形成的目标，不得在阶段 0 前批量创建空壳：
 
 ```text
 math_drawing_assistant/
+├─ bootstrap.py
 ├─ app_controller.py
 ├─ models/
 │  ├─ errors.py
@@ -458,6 +469,18 @@ math_drawing_assistant/
 │  ├─ settings_service.py
 │  ├─ simpletex_service.py
 │  └─ screenshot_service.py
+└─ ui/
+```
+
+测试目录同样按阶段形成，规范性测试职责如下；具体文件可随模块拆分调整，但必须与清单的阶段测试和允许文件一致：
+
+```text
+tests/
+├─ test_models.py
+├─ test_app_controller.py
+├─ engine/
+├─ workers/
+├─ services/
 └─ ui/
 ```
 

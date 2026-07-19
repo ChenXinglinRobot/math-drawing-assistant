@@ -19,6 +19,8 @@
 6. 完成本阶段测试、静态检查和必要人工验收，不自动进入下一阶段；
 7. 测试失败或人工验收未完成时不创建“完成”checkpoint。
 
+外部 P0 不再统一绑定到里程碑启动时刻。每项以 `联网确认.md` 标注的关闭阶段为锚点：必须在该阶段验收前关闭，或形成项目所有者批准并同步影响文档的降级决定；对应里程碑只有在其全部 P0 已关闭/降级后才能完成验收。阶段 13、21 等显式入口门仍按各阶段条目执行。
+
 开发阶段可以修改 Python 代码；但当前文档评审轮次不得修改 Python、安装依赖、创建 CI 或开始阶段 0。
 
 ## 2. 固定架构约束
@@ -27,7 +29,7 @@
 
 * 单图与多图统一使用 `PlotSceneRequest`、`PlotItemRequest`、`PlotSceneSpec`、分类型 `PlotItemSpec`、`RenderPlan`、`PlotSceneResult` 和 `PlotItemResult`；
 * 请求、Spec、Plan 和结果是不可变快照，集合优先 tuple，后台任务不引用 UI 可变列表；
-* `ViewportRequest` 表达用户意图，`ResolvedViewport` 表达合法最终范围；
+* `ViewportRequest` 表达用户意图并独占场景共享的 `aspect_request`，`ResolvedViewport` 表达合法最终范围；
 * UI 只收集意图和展示结果；AppController 不做规范化、分类、采样或 Matplotlib；
 * 所有完整绘图请求都进入唯一常驻、单线程、串行消费的 RenderActor；
 * RenderActor 只保留一个运行任务和一个 latest-wins 待任务；
@@ -36,7 +38,7 @@
 * TaskPhase 只含 IDLE、CAPTURING、RECOGNIZING、REVIEWING、RENDERING、SHUTTING_DOWN；结果存在性、复制可用、stale 和 ready 全部派生；
 * 多项场景原子生成，任一 item 失败、不可见或资源超限都不替换旧成功图；
 * 原始手动/OCR 文本不直接进入 eval、exec、无约束 sympify、通用 parse_expr 或宽松 LaTeX parser；
-* 所有 item 分类、验证且视口解析后，才构造 RenderPlan 和完整资源预算；
+* 所有 item 分类、验证后解析视口；自动视口需要数值探测时先验证独立探测预算，形成 `ResolvedViewport` 后构造 RenderPlan 并验证正式采样/渲染预算；
 * 一般直线与视口求交；受限圆、椭圆、双曲线、抛物线以参数化采样为主；
 * 真实密钥由 CredentialStore 管理，QSettings 只保存普通配置或凭据引用；
 * 首版没有数据库、插件系统、事件总线、依赖注入框架、WebEngine、QML、多进程或通用 CAS；
@@ -85,10 +87,12 @@ docs/manual-test-checklist.md
 * 建立目标包骨架，但不批量创建 pass 空壳或未实现 Worker；
 * 记录文档职责、决策模板、联网核查模板和 supported-formulas 的未来位置；
 * 记录基准设备环境：CPU、内存、Windows、缩放、Python 和核心依赖版本；M0 不伪造绘图性能数据。
+* 关闭 `联网确认.md` P0-01、P0-02，或按各项出口记录经批准的降级；记录 Proposed/P0 范围降级的具体批准责任人或可追踪批准记录，不虚构姓名；
+* 对根目录遗留演示代码只做盘点并记录保留/忽略/后续处置决定；阶段 0 默认不移动、删除或改写这些文件，实际处置须另开获批子任务并扩展准确允许文件。
 
 自动/静态检查：锁文件与项目配置一致；仓库无真实密钥或开发机绝对路径；包可导入。
 
-人工验收：目录与 architecture 一致；现有演示代码的保留/迁移决定明确；用户批准依赖变更后才执行同步。
+人工验收：目录与 architecture 一致；现有演示代码的保留/迁移决定明确但未被默认处置；P0-01/P0-02 已关闭或降级记录完整；用户批准依赖变更后才执行同步。
 
 ### 阶段 1：QApplication 启动骨架
 
@@ -121,9 +125,9 @@ tests/test_models.py
 tests/test_app_controller.py
 ```
 
-任务：建立 frozen Scene/Item 请求、Spec、Plan、结果、ViewportRequest/ResolvedViewport、ErrorInfo、PlotKind、TaskPhase；items 使用 tuple；AppController 分配 request_id、维护 current_scene_revision、最后成功结果及任务上下文；派生复制、stale、ready 状态。
+任务：建立 frozen Scene/Item 请求、Spec、Plan、结果、ViewportRequest/ResolvedViewport、ErrorInfo、PlotKind、TaskPhase；`aspect_request` 只定义在 ViewportRequest，全部 items 共享；items 使用 tuple；AppController 分配 request_id、维护 current_scene_revision、最后成功结果及任务上下文；派生复制、stale、ready 状态；六值 TaskPhase 只表达唯一前台活动，冲突的截图/OCR/绘图启动被禁用或拒绝。
 
-自动测试：模型不可变；单图为一个 item；请求模型不含采样/网格参数；TaskPhase 不混入结果/错误状态；每次影响结果的编辑立即递增 revision；旧 request_id/revision 被忽略；失败保留旧结果；关闭后拒绝新任务。
+自动测试：模型不可变；单图为一个 item；请求模型不含采样/网格参数；`aspect_request` 不在 PlotSceneRequest 重复出现且其变化立即递增 revision；TaskPhase 不混入结果/错误状态；另一前台任务活动时拒绝冲突启动；每次影响结果的编辑立即递增 revision；旧 request_id/revision 被忽略；失败保留旧结果；关闭后拒绝新任务。
 
 人工验收：模型没有无类型 dict 或共享可变默认值；不建立复杂状态机框架。
 
@@ -157,7 +161,7 @@ tests/test_app_controller.py
 
 允许修改：集中 limits/config 模块、错误模型与错误码、日志模块及测试、`docs/supported-formulas.md`、性能环境记录、经批准的类型检查配置和本地质量命令。
 
-任务：集中字符/token/AST/数字/指数/item/采样/分支/内存/尺寸/DPI 限制；稳定 ErrorInfo；日志脱敏、轮转和容量；各阶段 elapsed_ms 结构；supported-formulas 单一事实来源；确定类型检查政策。
+任务：集中字符/token/AST/数字/指数/item/采样/分支/内存/尺寸/DPI 限制；稳定 ErrorInfo；日志脱敏、轮转和容量；各阶段 elapsed_ms 结构；建立 supported-formulas 单一事实来源并使项目数测试统一读取配置值，不在清单复制具体上限；确定类型检查政策。
 
 批准门：安装/配置 Pyright、修改锁文件前必须再次获得用户批准。未批准时只完成工具无关的类型规则和本地命令占位说明，不安装替代工具。
 
@@ -185,19 +189,30 @@ tests/test_app_controller.py
 
 任务：递归下降或 Pratt parser 构造自有受限 AST；在转换到 SymPy/数值函数前限制节点、深度、数字、指数和参数数；手动/OCR Adapter 归一到同一验证器；分类显函数候选；禁止通用 solve 和验证前的无限制 expand/simplify/factor。
 
-自动测试：属性访问、`__import__`、eval/exec 字符串、Lambda、非法尾部、极端指数、超深嵌套、超长数字、未知函数/参数全部拒绝且不崩溃；`ln(x)`、`lg(x)`、`log(x,10)` 有效，裸 `log(x)` 拒绝；`x=y` 直接互换可支持，`y+1=x+2` 不做通用求解。
+自动测试：属性访问、`__import__`、eval/exec 字符串、Lambda、非法尾部、极端指数、超深嵌套、超长数字、未知函数/参数全部拒绝且不崩溃；`ln(x)`、`lg(x)`、`log(x,10)` 有效，裸 `log(x)` 拒绝；`x=y` 直接互换可支持；`y+1=x+2` 在 M1 不做通用求解并以“一次方程能力尚未交付”拒绝。完成安全原型并关闭 `联网确认.md` P0-03；未关闭则阶段 7 不通过。
 
 人工验收：错误消息不暴露栈；任何失败都能继续下一次输入。
 
-### 阶段 8：explicit sampler
+### 阶段 8：单项 ResolvedViewport、RenderPlanBuilder、预算与 explicit sampler
 
-目标：把已验证显函数变为有界绘图数据。
+目标：在正式采样前先形成 M1 单项场景的最终视口和已验证 RenderPlan，再把显函数变为有界绘图数据。
 
-允许修改：typed samplers 模块中的显函数实现、采样模型、limits、测试、supported-formulas。
+允许修改：
 
-任务：有限区间与点数限制；标量广播；NaN/无穷/定义域外点；渐近线断线；密集振荡警告；分批取消检查点；返回只读或任务私有数组。
+```text
+math_drawing_assistant/engine/render_plan_builder.py（含初始单项 budget_validator）
+math_drawing_assistant/engine/samplers.py 或已按 architecture 批准拆分的显函数 sampler
+math_drawing_assistant/models/render_plan.py
+math_drawing_assistant/models/viewport.py
+集中 limits/config
+tests/engine/test_render_plan.py
+tests/engine/test_samplers.py
+docs/supported-formulas.md
+```
 
-自动测试：`1/x`、`sqrt(x)`、`ln(x)`、`lg(x)`、`log(x,10)`、`tan(x)`、标量常量、定义域外、渐近线、密集振荡和资源边界。
+任务：实现手动视口优先、显函数自动 y 范围和无法可靠推导时的 `x,y ∈ [-10,10]` 回退；自动范围若需数值探测，先通过独立探测预算；形成 ResolvedViewport 后由 RenderPlanBuilder 构造单项计划并在正式采样前验证点数、分支、内存、尺寸/DPI 等预算；实现有限区间与点数限制、标量广播、NaN/无穷/定义域外点、渐近线断线、分批取消检查点和只读/任务私有数组；为密集振荡定义可测代理指标、阈值和验收样例，不声称精确统计任意函数周期数。
+
+自动测试：手动四边界和 `aspect_request` 不被覆盖；自动 y 得到有限合法范围；无法推导时按产品回退；探测超限在探测前拒绝；正式采样在 RenderPlan 预算前不可进入；`1/x`、`sqrt(x)`、`ln(x)`、`lg(x)`、`log(x,10)`、`tan(x)`、标量常量、定义域外、渐近线、密集振荡代理和各资源边界。
 
 人工验收：不误连渐近线；警告中文可理解。
 
@@ -207,7 +222,7 @@ tests/test_app_controller.py
 
 允许修改：`engine/renderer.py`、渲染模型、renderer 测试。
 
-任务：直接创建 Figure 与 FigureCanvasAgg；共享 ResolvedViewport、坐标轴、网格、尺寸/DPI；每请求独立 Figure；BytesIO 输出；finally 释放资源；不返回 Qt 对象。
+任务：只接收阶段 8 已通过预算的 RenderPlan 和 typed 数据；直接创建 Figure 与 FigureCanvasAgg；共享 ResolvedViewport、坐标轴、网格、尺寸/DPI；每请求独立 Figure；BytesIO 输出；finally 释放资源；不返回 Qt 对象。
 
 自动测试：PNG 头/尺寸；无可见数据不成功；多次生成不泄漏 Figure；异常和取消释放 Figure/Canvas/BytesIO；不要求跨环境 PNG 字节完全一致。
 
@@ -221,7 +236,7 @@ tests/test_app_controller.py
 
 任务：长期 QThread worker-object 或已批准等价单执行器；一个运行 + 一个最新待任务；新待任务覆盖旧待任务；Engine 全链路在 Actor；明确取消检查点；request_id/revision 双校验；关闭时拒绝新任务、清待任务、作废当前结果、有上限等待；不强制终止。
 
-自动测试：同一时刻只有一个任务进入 Matplotlib；latest-wins；旧 request_id/revision 忽略；异常后消费下一任务；取消释放资源；关闭不接收新任务；不出现运行线程被销毁；不泄漏 Figure。
+自动测试：同一时刻只有一个任务进入 Matplotlib；latest-wins；旧 request_id/revision 忽略；异常后消费下一任务；取消释放资源；关闭不接收新任务；不出现运行线程被销毁；不泄漏 Figure。完成固定 Agg/Actor 原型并关闭 `联网确认.md` P0-04；未关闭则阶段 10 不通过。
 
 人工验收：快速提交、渲染中关闭、错误后继续绘图；UI 保持响应。
 
@@ -229,11 +244,11 @@ tests/test_app_controller.py
 
 目标：完成手动显函数 → RenderActor → 预览的离线闭环。
 
-允许修改：AppController、相关 UI、Engine/Actor 适配、端到端与状态测试。
+允许修改：AppController、相关 UI、`engine/render_plan_builder.py`、阶段 8 sampler 与 renderer 的整合适配、RenderActor 适配、端到端与状态测试。
 
 任务：AppController 从当前 UI 快照创建单 item PlotSceneRequest；Actor 内执行请求验证、逐项解析、PlotSceneSpec、ResolvedViewport、RenderPlan、预算、采样、渲染；结果双校验后更新 UI；失败/过期保留旧图。
 
-自动测试：成功、语法失败、资源失败、连续请求、编辑后 stale、旧图复制可用、关闭；AppController 未执行数学处理；GUI 主线程未运行完整 Engine。
+自动测试：成功、语法失败、自动 y、自动范围回退、手动视口/比例优先、探测预算失败、正式 RenderPlan 预算失败、连续请求、编辑后 stale、旧图复制可用、关闭；AppController 未执行数学处理；GUI 主线程未运行完整 Engine。
 
 人工验收：PRD M1 样例；生成期间窗口可移动；修改输入立即标记旧图。
 
@@ -243,9 +258,9 @@ tests/test_app_controller.py
 
 允许修改：ClipboardService、qt_image/UI/AppController 边界、服务测试、README、supported-formulas、人工清单、基准记录。
 
-任务：GUI 主线程把当前成功 PNG 转为 QImage 并写 QClipboard；记录内部图片指纹；无结果拒绝复制；stale 结果可复制但有清晰提示；完成显函数、安全、Actor、性能和离线回归。
+任务：GUI 主线程把当前成功 PNG 转为 QImage 并写 QClipboard；记录内部图片指纹；无结果拒绝复制；stale 结果可复制但有清晰提示；完成显函数、安全、Actor、性能和离线回归；在首次计算 P95 前冻结并记录样本量/预热、冷/热区分、计时起止、成功判定、异常样本、百分位算法、复测规则和软硬件环境。
 
-自动测试：复制可用性派生；复制失败不删预览；内部写入标识；M1 全套 pytest、类型检查（若已批准）、独立性能基准。
+自动测试：复制可用性派生；复制失败不删预览；内部写入标识；M1 全套 pytest、类型检查（若已批准）、按已冻结测量协议运行的独立性能基准；基准报告缺少协议字段时不判定 P95 达标。
 
 人工验收：粘贴到 Windows 画图、PowerPoint、Word；断网仍可绘图/复制；记录 CPU、内存、Windows、缩放、版本、启动与典型场景耗时。
 
@@ -253,11 +268,13 @@ tests/test_app_controller.py
 
 目标：在采样前固定一般直线和受限圆锥曲线的几何模型。
 
+入口门：开始前关闭 `联网确认.md` P0-05，或记录“不开始 M1.5、保留已验收 M1”的批准降级；P1-01、P1-02 同时完成选择或按台账记录阶段性策略。
+
 允许修改：plot specs、classifier、typed validators、parser contract、supported-formulas 和相关测试。
 
 任务：`LINE_EQUATION`；LineSpec(A,B,C)；Circle/Ellipse/Hyperbola/Parabola Spec；保存规范化系数、几何参数、中心/顶点、主轴/开口和自动视口信息；只在复杂度验证后做有限一次/二次系数提取；拒绝退化、无实点、xy 旋转项、未知参数和非二次隐式方程。
 
-自动测试：`x=2`、`x+y=1`、`2x-y+3=0`；四类非退化曲线、平移、左右交换、整体非零倍数；退化、无实点、xy、未知参数、三次和变量分母拒绝；巨大/近零系数不误分类。
+自动测试：`x=2`、`x+y=1`、`2x-y+3=0`；`y+1=x+2` 从 M1 的阶段性拒绝升级为 `LINE_EQUATION` 且不走显函数通用移项；四类非退化曲线、平移、左右交换、整体非零倍数；退化、无实点、xy、未知参数、三次和变量分母拒绝；巨大/近零系数不误分类。
 
 人工验收：错误明确区分“不支持的方程类型”和“圆锥曲线退化”。
 
@@ -271,7 +288,7 @@ tests/test_app_controller.py
 
 自动测试：竖直/水平/斜线；圆、椭圆、双曲线、抛物线；完全可见、裁切、不可见；各分支不误连；采样点代回方程残差；极端视口/系数不崩溃。
 
-人工/原型：与教材样例和独立数值对照核验；二维 contour 只可作为诊断对照，不进入主链路。
+人工/原型：与教材样例和独立数值对照核验；二维 contour 只可作为诊断对照，不进入主链路。关闭 `联网确认.md` P0-06；原型未通过则阶段 14 不通过，也不得切换为未决的 contour 正式方案。
 
 ### 阶段 15：M1.5 渲染整合、回归与性能基准
 
@@ -279,11 +296,11 @@ tests/test_app_controller.py
 
 允许修改：renderer、AppController/UI、Actor 适配、回归测试、supported-formulas、architecture/decisions、基准和人工清单。
 
-任务：同一 Scene/Plan/Actor 链路；显示确定类型、规范化方程、不可见/裁切/精度警告；圆锥曲线默认 equal，用户明确比例优先；失败保留旧图。
+任务：同一 Scene/Plan/Actor 链路；显示确定类型、规范化方程、不可见失败以及裁切/精度警告；圆锥曲线默认 equal，用户明确比例优先；失败保留旧图；沿用阶段 12 测量协议，若修改必须记录理由和可比性；依据 M1/M1.5 基准在 M1.6 开始前冻结场景项目数及总资源限制到配置和 supported-formulas。
 
 自动测试：阶段 13/14 全矩阵、M1 回归、Actor 回归、单位比例、资源预算和原子单项结果。
 
-人工验收：宽/窄窗口和不同 DPI 下圆不变形；复制正确；记录 M1.5 P50/P95、峰值内存和采样规模。
+人工验收：宽/窄窗口和不同 DPI 下圆不变形；复制正确；按冻结协议记录 M1.5 P50/P95、峰值内存和采样规模；完成真实教材表达式矩阵并关闭 `联网确认.md` P0-07，未关闭则 M1.5 不通过。
 
 ### 阶段 16：多输入行和稳定 item_id
 
@@ -291,19 +308,19 @@ tests/test_app_controller.py
 
 允许修改：`ui/widgets/plot_item_list.py`、相关输入/UI/AppController、模型和 UI/状态测试。
 
-任务：添加、删除、重排，最多 8 项；item_id 在编辑期间稳定；键盘可完成操作；选中项可接未来 OCR；每次影响结果的操作立即递增 revision；逐行错误位置。
+任务：添加、删除、重排，项目数不得超过 supported-formulas 中已冻结的配置上限；item_id 在编辑期间稳定；键盘可完成操作；选中项可接未来 OCR；每次影响结果的操作立即递增 revision；逐行错误位置。
 
-自动测试：1–8 项、第 9 项拒绝、增删/重排/编辑 revision、item_id 稳定、错误不串行。
+自动测试：1 项至配置上限、超过上限一项拒绝、增删/重排/编辑 revision、item_id 稳定、错误不串行；测试从集中配置读取上限，不在测试描述复制数值。
 
 人工验收：鼠标/键盘/触控、Tab 顺序、焦点和行级提示。
 
-### 阶段 17：样式分配器、图例与 scene budget validator
+### 阶段 17：样式、图例与多项 RenderPlanBuilder/scene budget 扩展
 
 目标：在渲染前形成完整多项 RenderPlan。
 
-允许修改：样式分配器、RenderPlanBuilder、budget validator、models、renderer 接口及测试。
+允许修改：样式分配器、`math_drawing_assistant/engine/render_plan_builder.py`、其中的多项 budget validator、models、renderer 接口及测试。
 
-任务：所有 item 先分类/验证；解析共享视口；按 item_id/顺序分配稳定颜色与线型；图例顺序稳定；按点数、分支、内存、输出大小和耗时目标验证场景预算；错误映射 item_id/source span。
+任务：扩展阶段 8 已实现的单项 RenderPlanBuilder 和预算门禁，不另建平行管线；所有 item 先分类/验证；解析共享视口；按 item_id/顺序分配稳定颜色与线型；图例顺序稳定；按点数、分支、内存、输出大小和耗时目标验证场景预算；错误映射 item_id/source span。
 
 自动测试：样式稳定、重排后的图例、灰度线型、混合类型默认 equal、预算各维度边界、预算发生在分类和视口解析之后。
 
@@ -315,9 +332,9 @@ tests/test_app_controller.py
 
 允许修改：AppController、UI、RenderActor、Engine renderer、端到端/回归测试和文档。
 
-任务：最多 8 个 item 在一个 Figure/坐标系渲染；任一项错误、不可见、超限或渲染失败，整场失败且旧图不被覆盖；结果逐项返回类型、样式、警告和可见分支；建立 item fingerprint、逐阶段 elapsed_ms、可扩展 cache_hit/cache_miss 诊断字段和可复现性能基准，但不实现缓存。
+任务：不超过配置项目数上限的 items 在一个 Figure/坐标系渲染；任一项错误、不可见、超限或渲染失败，整场失败且旧图不被覆盖；结果逐项返回类型、样式、警告和可见分支；建立 item fingerprint、逐阶段 elapsed_ms、可扩展 cache_hit/cache_miss 诊断字段和可复现性能基准，但不实现缓存。
 
-自动测试：多显函数、多圆锥、混合场景；第 9 项拒绝；逐项错误；旧图保护；stable item/style/legend；灰度区分；总预算；旧 revision 不覆盖；M1/M1.5 回归。
+自动测试：多显函数、多圆锥、混合场景；超过配置上限一项拒绝；逐项错误；旧图保护；stable item/style/legend；灰度区分；总预算；旧 revision 不覆盖；M1/M1.5 回归。
 
 人工验收：PRD 教学场景、添加/删除/重排、快速连续生成、复制一张完整场景图。
 
@@ -355,6 +372,8 @@ tests/test_app_controller.py
 
 入口决策：用户个人 UAT + 经批准凭据存储、供应商正式临时令牌、单独评审的服务端，或关闭真实 OCR。无安全方案不得进入阶段 22。
 
+验收门：关闭 `联网确认.md` P0-08、P0-09、P0-10、P0-11，或形成“阶段 22/23 不接真实服务、继续模拟 OCR”的批准降级。任何一项未满足且无降级记录时，阶段 21 不通过。
+
 ### 阶段 22：CredentialStore 与 SimpleTexService
 
 目标：建立凭据与 HTTP 供应商边界，不混入数学判断。
@@ -373,9 +392,9 @@ tests/test_app_controller.py
 
 允许修改：RecognitionWorker、AppController、核查 UI/模型、线程/状态测试。
 
-任务：独立 QThread worker-object；内部 recognition request_id；过期结果不进入核查；取消立即失效；RECOGNIZING → REVIEWING，用户确认后新建绘图 request；失败保留旧图；关闭清理。
+任务：独立 QThread worker-object；内部 recognition request_id；过期结果不进入核查；取消立即失效；RECOGNIZING → REVIEWING，用户确认后新建绘图 request；失败保留旧图；关闭清理；RecognitionWorker 与 RenderActor 可同时常驻但生命周期分离，首版 AppController 不同时调度 OCR 与绘图前台任务。
 
-自动测试：旧 OCR 结果、取消、失败、关闭、与 RenderActor 并行但不共享线程、OcrResult 到本地分析的安全边界。
+自动测试：旧 OCR 结果、取消、失败、关闭、与 RenderActor 不共享线程/取消标记/生命周期、冲突前台任务拒绝、OcrResult 到本地分析的安全边界。完成兼容数据集并关闭 `联网确认.md` P0-12；否则按台账关闭真实 OCR、保留模拟流程。
 
 人工验收：断网、错误凭据、超时、重复点击、请求期间关闭、取消后继续离线绘图。
 
@@ -387,7 +406,7 @@ tests/test_app_controller.py
 
 比较：有应用身份回调、用户主动粘贴、短时受限剪贴板观察。实测成功、取消、超时、相同截图、多显示器/缩放、截图工具关闭、外部程序同时改剪贴板。
 
-输出：批准的策略、回退策略、截图事件去抖窗口及证据。该窗口不得复用公式派生分析防抖常量。
+输出：批准的策略、回退策略、截图事件去抖窗口及证据。该窗口不得复用公式派生分析防抖常量。关闭 `联网确认.md` P0-13；若无策略通过，则形成“移除系统截图、只保留本地图片导入”的批准降级。
 
 ### 阶段 25：ScreenshotService 与 Clipboard 协调
 
@@ -429,7 +448,7 @@ tests/test_app_controller.py
 
 核实：pyside6-deploy/Nuitka/PyInstaller 候选，Qt/Matplotlib 资源、onefile/standalone、应用身份、启动/包体/调试/误报、代码签名、Windows 10 风险、Qt/依赖/字体/图标许可证。
 
-不要求两次产物二进制哈希完全一致；要求固定输入、依赖和步骤可重建，并记录差异来源。
+不要求两次产物二进制哈希完全一致；要求固定输入、依赖和步骤可重建，并记录差异来源。完成许可清单并关闭 `联网确认.md` P0-15；未关闭时只能保留开发构建，不进入发布配置验收。
 
 ### 阶段 29：CI、扫描和发布质量门禁
 
@@ -453,7 +472,7 @@ tests/test_app_controller.py
 
 人工/实机：干净 Windows 11 安装/启动/升级/卸载/无 Python；经决策的 Windows 10 矩阵；DPI/多屏/触控；PowerPoint、Word、WPS、希沃白板；断网；后台任务关闭；配置/日志/凭据清理；SmartScreen/杀毒/签名。
 
-发布阻塞：`联网确认.md` 的 P0 项关闭或有负责人批准的降级方案；M1.6 若延期必须有正式决策；真实 OCR 无安全鉴权/隐私结论时关闭。
+发布阻塞：关闭 `联网确认.md` P0-14、P0-16、P0-17，并确认此前所有 P0 已关闭或有项目所有者批准的降级方案；P0-15 未关闭时不得发布。M1.6 若延期必须有正式决策；真实 OCR 无安全鉴权/隐私结论时关闭；代码签名/SmartScreen/杀毒未完成时不得形成公开 1.0 候选，只能按台账降级为内部测试构建。
 
 ## 5. 统一测试矩阵摘要
 
@@ -471,7 +490,7 @@ tests/test_app_controller.py
 
 ### 5.4 多图
 
-必须覆盖最多 8 项、第 9 项拒绝、任一项错误整场失败、旧成功图保护、item/style/legend 稳定、灰度线型、场景预算和 stale 结果保护。
+必须覆盖从 1 项到配置项目数上限、超过上限一项拒绝、任一项错误整场失败、旧成功图保护、item/style/legend 稳定、灰度线型、场景预算和 stale 结果保护；具体上限只从集中配置和 supported-formulas 读取。
 
 ### 5.5 RenderActor
 
