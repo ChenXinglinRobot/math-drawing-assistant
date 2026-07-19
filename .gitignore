@@ -13,3 +13,6 @@ wheels/
 deployment/
 pyside_app_demo.dist/
 pysidedeploy.spec
+
+# Code intelligence index
+.codegraph/
