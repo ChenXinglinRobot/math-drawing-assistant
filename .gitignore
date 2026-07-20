@@ -9,6 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# Local configuration and runtime logs
+.env
+logs/
+
 # Build artifacts (Nuitka / pysidedeploy)
 deployment/
 pyside_app_demo.dist/
