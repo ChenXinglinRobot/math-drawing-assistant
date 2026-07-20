@@ -3,17 +3,16 @@ name = "math-drawing-assistant"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
-    "matplotlib>=3.11.1",
-    "numpy>=2.5.1",
-    "pyside6>=6.11.1",
+    "matplotlib==3.11.1",
+    "numpy==2.5.1",
+    "pyside6==6.11.1",
+    "sympy==1.14.0",
 ]
 
 [dependency-groups]
 dev = [
-    "nuitka>=4.1.3",
-    "ordered-set>=4.1.0",
-    "pip>=26.1.2",
-    "zstandard>=0.25.0",
+    "nuitka==4.1.3",
+    "pytest==9.1.1",
 ]
