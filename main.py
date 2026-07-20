@@ -1,18 +1,10 @@
-import sys
+"""数学绘图助手 —— 启动入口。
 
-from PySide6.QtWidgets import QApplication
+本模块是极薄入口，不放置窗口布局、绘图、业务状态或资源加载逻辑。
+导入本模块不会创建 QApplication、显示窗口或启动事件循环。
+"""
 
-from main_window import MainWindow
-
-
-def main() -> None:
-    app = QApplication(sys.argv)
-
-    window = MainWindow()
-    window.show()
-
-    raise SystemExit(app.exec())
-
+from math_drawing_assistant.bootstrap import run
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run())
