@@ -7,13 +7,26 @@ from enum import Enum
 
 
 class ErrorCode(str, Enum):
-    """Published error-code registry for implemented infrastructure only."""
+    """Published error-code registry for implemented project boundaries."""
 
     INVALID_INPUT = "invalid_input"
     RENDER_FAILED = "render_failed"
     INVALID_REQUEST = "invalid_request"
     RESOURCE_LIMIT_EXCEEDED = "resource_limit_exceeded"
     INTERNAL_ERROR = "internal_error"
+    EMPTY_INPUT = "empty_input"
+    INPUT_TOO_LONG = "input_too_long"
+    UNKNOWN_CHARACTER = "unknown_character"
+    UNKNOWN_IDENTIFIER = "unknown_identifier"
+    UNSUPPORTED_RELATION = "unsupported_relation"
+    TOKEN_LIMIT_EXCEEDED = "token_limit_exceeded"
+    NUMBER_TOO_LONG = "number_too_long"
+    NESTING_TOO_DEEP = "nesting_too_deep"
+    DELIMITER_MISMATCH = "delimiter_mismatch"
+    ILLEGAL_TRAILING = "illegal_trailing"
+    MULTIPLE_EQUALS = "multiple_equals"
+    EQUATION_LEFT_EMPTY = "equation_left_empty"
+    EQUATION_RIGHT_EMPTY = "equation_right_empty"
 
 
 @dataclass(frozen=True, slots=True)
