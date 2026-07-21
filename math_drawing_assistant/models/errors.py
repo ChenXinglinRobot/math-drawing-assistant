@@ -1,24 +1,95 @@
-"""Structured, display-safe error information."""
+"""Stable, typed, display-safe error information."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+
+
+class ErrorCode(str, Enum):
+    """Published error-code registry for implemented infrastructure only."""
+
+    INVALID_INPUT = "invalid_input"
+    RENDER_FAILED = "render_failed"
+    INVALID_REQUEST = "invalid_request"
+    RESOURCE_LIMIT_EXCEEDED = "resource_limit_exceeded"
+    INTERNAL_ERROR = "internal_error"
 
 
 @dataclass(frozen=True, slots=True)
+class SourceSpan:
+    """A zero-based half-open location in one source string."""
+
+    start: int
+    end: int
+
+    def __post_init__(self) -> None:
+        for name, value in (("start", self.start), ("end", self.end)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"SourceSpan.{name} must be an integer.")
+        if self.start < 0:
+            raise ValueError("SourceSpan.start must not be negative.")
+        if self.end < self.start:
+            raise ValueError("SourceSpan.end must not precede start.")
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class ErrorInfo:
     """A small, serializable error notice without exception or stack data."""
 
-    code: str
+    code: ErrorCode
     user_message: str
     technical_message: str | None = None
     item_id: str | None = None
     field_name: str | None = None
-    source_location: str | None = None
+    source_location: SourceSpan | None = None
     recoverable: bool = True
 
-    def __post_init__(self) -> None:
-        if not self.code:
-            raise ValueError("ErrorInfo.code must not be empty.")
-        if not self.user_message:
+    def __init__(
+        self,
+        code: ErrorCode | str,
+        user_message: str,
+        technical_message: str | None = None,
+        item_id: str | None = None,
+        field_name: str | None = None,
+        source_location: SourceSpan | None = None,
+        recoverable: bool = True,
+    ) -> None:
+        """Build an error, accepting existing published strings at the boundary."""
+
+        try:
+            stable_code = ErrorCode(code)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("ErrorInfo.code must be a registered error code.") from exc
+
+        if not isinstance(user_message, str):
+            raise TypeError("ErrorInfo.user_message must be a string.")
+        if not user_message.strip():
             raise ValueError("ErrorInfo.user_message must not be empty.")
+        self._validate_optional_text(technical_message, "technical_message")
+        self._validate_optional_text(item_id, "item_id")
+        self._validate_optional_text(field_name, "field_name")
+        if source_location is not None and not isinstance(
+            source_location,
+            SourceSpan,
+        ):
+            raise TypeError("source_location must be a SourceSpan or None.")
+        if not isinstance(recoverable, bool):
+            raise TypeError("recoverable must be a bool.")
+
+        object.__setattr__(self, "code", stable_code)
+        object.__setattr__(self, "user_message", user_message)
+        object.__setattr__(self, "technical_message", technical_message)
+        object.__setattr__(self, "item_id", item_id)
+        object.__setattr__(self, "field_name", field_name)
+        object.__setattr__(self, "source_location", source_location)
+        object.__setattr__(self, "recoverable", recoverable)
+
+    @staticmethod
+    def _validate_optional_text(value: str | None, name: str) -> None:
+        if value is None:
+            return
+        if not isinstance(value, str):
+            raise TypeError(f"ErrorInfo.{name} must be a string or None.")
+        if not value.strip():
+            raise ValueError(f"ErrorInfo.{name} must not be empty when supplied.")

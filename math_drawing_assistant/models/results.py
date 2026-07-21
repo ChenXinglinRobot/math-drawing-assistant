@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from math_drawing_assistant.models.diagnostics import StageTiming
 from math_drawing_assistant.models.errors import ErrorInfo
 from math_drawing_assistant.models.state import PlotKind
 from math_drawing_assistant.models.viewport import ResolvedViewport
@@ -13,6 +14,15 @@ def _warning_snapshot(warnings: tuple[str, ...]) -> tuple[str, ...]:
     snapshot = tuple(warnings)
     if not all(isinstance(warning, str) for warning in snapshot):
         raise TypeError("warnings must contain strings.")
+    return snapshot
+
+
+def _timing_snapshot(
+    timings: tuple[StageTiming, ...],
+) -> tuple[StageTiming, ...]:
+    snapshot = tuple(timings)
+    if not all(isinstance(timing, StageTiming) for timing in snapshot):
+        raise TypeError("elapsed_ms must contain StageTiming instances.")
     return snapshot
 
 
@@ -59,7 +69,7 @@ class PlotSceneResult:
     resolved_viewport: ResolvedViewport | None = None
     warnings: tuple[str, ...] = ()
     error: ErrorInfo | None = None
-    elapsed_ms: int | None = None
+    elapsed_ms: tuple[StageTiming, ...] = ()
 
     def __post_init__(self) -> None:
         if isinstance(self.request_id, bool) or not isinstance(self.request_id, int):
@@ -90,17 +100,9 @@ class PlotSceneResult:
             raise TypeError(
                 "resolved_viewport must be a ResolvedViewport or None.",
             )
-        if self.elapsed_ms is not None:
-            if isinstance(self.elapsed_ms, bool) or not isinstance(
-                self.elapsed_ms,
-                int,
-            ):
-                raise TypeError("elapsed_ms must be an integer or None.")
-            if self.elapsed_ms < 0:
-                raise ValueError("elapsed_ms must not be negative.")
-
         result_snapshot = tuple(self.item_results)
         if not all(isinstance(result, PlotItemResult) for result in result_snapshot):
             raise TypeError("item_results must contain PlotItemResult instances.")
         object.__setattr__(self, "item_results", result_snapshot)
         object.__setattr__(self, "warnings", _warning_snapshot(self.warnings))
+        object.__setattr__(self, "elapsed_ms", _timing_snapshot(self.elapsed_ms))
