@@ -69,11 +69,13 @@ class StatusPanel(QWidget):
         """
         self._text_label.setText(text)
         obj_name = self.STATUS_LEVELS.get(level, "statusIdle")
-        # 强制重新应用样式
-        self._icon_label.style().unpolish(self._icon_label)
-        self._icon_label.style().polish(self._icon_label)
         # 同时在 status bar 上设置 object name 以支持 QSS 整体选择
         self.setObjectName(obj_name)
+        # 父面板状态必须先更新，再按当前选择器刷新子控件样式。
+        icon_style = self._icon_label.style()
+        icon_style.unpolish(self._icon_label)
+        icon_style.polish(self._icon_label)
+        self._icon_label.update()
 
     def status_text(self) -> str:
         """返回当前状态文字。"""

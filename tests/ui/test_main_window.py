@@ -10,12 +10,14 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
@@ -229,6 +231,41 @@ def test_initial_state_is_ready_copy_disabled(qapp: QApplication) -> None:
     finally:
         window.close()
         window.deleteLater()
+        QApplication.processEvents()
+
+
+def test_runtime_status_indicator_style_tracks_current_level(
+    qapp: QApplication,
+) -> None:
+    """状态图标运行时样式应与当前状态一致，而不是滞后一次切换。"""
+    previous_stylesheet = qapp.styleSheet()
+    window = MainWindow(theme_name="dark")
+    window.show()
+    QApplication.processEvents()
+    try:
+        icon = window.status_panel.findChild(QLabel, "statusIcon")
+        assert icon is not None
+        idle_color = icon.palette().color(QPalette.ColorRole.WindowText)
+
+        window.apply_display_state(TaskPhase.RENDERING, False)
+        QApplication.processEvents()
+        processing_color = icon.palette().color(QPalette.ColorRole.WindowText)
+        assert processing_color != idle_color
+
+        window.status_panel.set_status("发生错误", "error")
+        QApplication.processEvents()
+        error_color = icon.palette().color(QPalette.ColorRole.WindowText)
+        assert error_color not in (idle_color, processing_color)
+
+        window.apply_display_state(TaskPhase.IDLE, False)
+        QApplication.processEvents()
+        restored_idle_color = icon.palette().color(QPalette.ColorRole.WindowText)
+        assert restored_idle_color == idle_color
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+        qapp.setStyleSheet(previous_stylesheet)
         QApplication.processEvents()
 
 
@@ -528,6 +565,49 @@ def test_interactive_widgets_minimum_height_44(qapp: QApplication) -> None:
 # ======================================================================
 # 10 & 11. QSS 主题加载与 focus 样式
 # ======================================================================
+
+
+@pytest.mark.parametrize("theme_name", ["light", "dark"])
+def test_checkbox_focus_indicator_clears_after_tab(
+    qapp: QApplication,
+    theme_name: str,
+) -> None:
+    """复选框失焦后应恢复未聚焦外观，不残留整行焦点框。"""
+    previous_stylesheet = qapp.styleSheet()
+    window = MainWindow(theme_name=theme_name)
+    window.show()
+    QApplication.processEvents()
+    try:
+        checkbox = window.viewport_panel.findChild(QCheckBox)
+        image_width = next(
+            spinbox
+            for spinbox in window.viewport_panel.findChildren(QSpinBox)
+            if spinbox.accessibleName() == "图片宽度"
+        )
+        assert checkbox is not None
+
+        image_width.setFocus()
+        QApplication.processEvents()
+        unfocused_image = checkbox.grab().toImage()
+
+        checkbox.setFocus()
+        QApplication.processEvents()
+        focused_image = checkbox.grab().toImage()
+        assert checkbox.hasFocus() is True
+        assert focused_image != unfocused_image
+
+        QTest.keyClick(checkbox, Qt.Key.Key_Tab)
+        QApplication.processEvents()
+        after_tab_image = checkbox.grab().toImage()
+        assert checkbox.hasFocus() is False
+        assert after_tab_image == unfocused_image
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+        qapp.setStyleSheet(previous_stylesheet)
+        QApplication.processEvents()
+
 
 def test_light_qss_loads_and_is_non_empty() -> None:
     """亮色 QSS 文件可加载且非空。"""

@@ -217,7 +217,7 @@ QCheckBox::indicator:checked {
     border-color: #0060b0;
 }
 
-QCheckBox:focus::indicator {
+QCheckBox::indicator:focus {
     border: 2px solid #0078d4;
 }
 
