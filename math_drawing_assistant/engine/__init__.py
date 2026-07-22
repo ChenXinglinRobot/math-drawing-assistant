@@ -8,11 +8,16 @@ from math_drawing_assistant.engine.equation_splitter import (
 from math_drawing_assistant.engine.normalizer import NormalizedInput, normalize_input
 from math_drawing_assistant.engine.numeric_executor import (
     Float64Vector,
+    NUMERIC_EXECUTOR_CONTRACT_VERSION,
     NumericExecutionCost,
     NumericExecutionResult,
     NumericValue,
     estimate_numeric_execution_cost,
     execute_explicit_function,
+)
+from math_drawing_assistant.engine.render_plan_builder import (
+    RenderPlanBuilder,
+    build_single_explicit_render_plan,
 )
 from math_drawing_assistant.engine.parser import (
     ParseMetrics,
@@ -58,6 +63,7 @@ __all__ = [
     "ExpressionInput",
     "Float64Vector",
     "NormalizedInput",
+    "NUMERIC_EXECUTOR_CONTRACT_VERSION",
     "NumericExecutionCost",
     "NumericExecutionResult",
     "NumericValue",
@@ -65,6 +71,7 @@ __all__ = [
     "ParsedEquationInput",
     "ParsedExpressionInput",
     "ParsedInput",
+    "RenderPlanBuilder",
     "SourceMap",
     "Token",
     "TokenKind",
@@ -72,6 +79,7 @@ __all__ = [
     "analyze_explicit_function",
     "build_explicit_function_spec",
     "build_explicit_scene_spec",
+    "build_single_explicit_render_plan",
     "classify_plot",
     "normalize_input",
     "estimate_numeric_execution_cost",

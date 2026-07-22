@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
-文档版本：stage-8a-safe-numeric-v1-worktree
-状态：阶段 7 已通过；阶段 8A 的单项 Spec 衔接和安全数值执行已在工作区实现，并通过定点、Engine、阶段 5–7 定向与全量自动测试；本文不声明阶段 8B、8C 或阶段 9 已实现
+文档版本：stage-8c1-render-plan-budget-v1-worktree
+状态：阶段 7、8A、8B 已通过；阶段 8C-1 的单项 RenderPlan、正式标量预算和 approval receipt 已实现。本文不声明 8C-2、sampler 或阶段 9 已实现。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
@@ -375,6 +375,76 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 | 警告代码 | 含义 | 首次使用 |
 |---|---|---|
 | `auto_viewport_fallback` | 数学探测不可靠，使用集中式安全回退范围 | 阶段 8B resolver |
+
+## 阶段 8C-1 单项 RenderPlan、预算与 approval receipt
+
+阶段 8C-1 的唯一入口为 `build_single_explicit_render_plan` 或等价的
+`RenderPlanBuilder.build`。它只接收一个 `PlotSceneSpec`、一个已经完整的
+`ResolvedViewport`、输出标量 `image_width`、`image_height`、`dpi`、`show_grid`、
+`show_legend`、当前 `ApplicationLimits` 和 `ExplicitSamplingPolicy`；不再接收原始
+文本、token、普通 AST、SymPy 表达式、callable 或阶段 8B probe x/y 数组。
+
+Builder 只接受恰有一个精确 `ExplicitFunctionSpec` 的 Scene，并重新验证 Spec 的
+validated-expression/active-limits 契约。`ResolvedViewport` 是最终范围值对象，而非
+可信能力对象：Builder 不追溯其 resolver 来源，也不运行 probe；它按**当前** limits
+重新检查精确类型、四个有限非 bool 边界、顺序、x/y span、坐标绝对值、`AspectRequest`
+和 `ViewportSource`。`source` 可保留给诊断，但不影响预算是否获批。
+
+### ExplicitSamplingPolicy
+
+默认 `DEFAULT_EXPLICIT_SAMPLING_POLICY` 的版本为
+`explicit-sampling-policy-v1`。它是 frozen/slots 的纯标量模型，没有 NumPy 数组，也
+不覆盖 `ApplicationLimits` 的硬上限。
+
+| 字段 | 默认值 | 用途 |
+|---|---:|---|
+| `points_per_horizontal_pixel` | 2 | 将输出宽度确定性映射为正式点数 |
+| `min_sample_points` | 320 | 最小正式点数 |
+| `preferred_batch_points` | 4,096 | 内存允许时的首选 batch |
+| `preferred_max_segment_count` | 16 | 再与 branches 硬上限取最小值 |
+| `cancellation_check_interval` | 256 | 后续 sampler 的取消/诊断检查间隔契约 |
+| `finite_jump_threshold` | 64 | 后续有限跳变诊断阈值契约 |
+| `dense_oscillation_proxy_threshold` | 32 | 后续密集振荡代理阈值契约 |
+
+正式点数为 `max(min_sample_points, image_width * points_per_horizontal_pixel)`；超出
+`max_sample_points_per_item` 或 `max_total_sample_points` 时，返回可恢复的
+`resource_limit_exceeded`，而不是直接把每个请求提升到最大点数。
+
+### 正式内存预算与批准门禁
+
+Builder 在任何采样数组、`np.linspace` 或执行器调用之前，只用 Python 标量计算：
+
+```text
+N*8                         final x
+N*8                         final y
+N*1                         finite/validity mask
+S*2*8                       segment index ranges
+max(L-1, 0)*B*8             executor extra batch peak
+W*H*4                       one RGBA canvas
+max_png_bytes               PNG output reserve
+```
+
+其中 `N` 为正式点数、`B` 为 batch、`L` 为 stage 8A
+`NumericExecutionCost.max_live_float64_vectors`、`S` 为已受硬 branches 上限约束的
+segment 数。完整 final x 已单独计入，batch x 是它的 slice view，因此执行器额外项使用
+`L-1`，不重复计数。Builder 先计算与 batch 无关的固定项，再从剩余内存反推不大于首选值
+的 batch；最小 batch 仍无法容纳时返回可恢复的 `resource_limit_exceeded`。这只是项目
+控制的大缓冲上界，不是对 Python、NumPy 或未来 Matplotlib RSS 的精确预测。
+
+普通 `RenderPlan(...)` 只能构造未审批快照。Builder 在所有 Scene、viewport、输出、点数、
+branches 和预算检查成功后才由 model-owned factory 签发 typed approval receipt。未来
+sampler 必须调用 `validate_approved_render_plan`；该校验会重查 receipt seal 与计划的版本、
+输出和预算关键字段，拒绝普通构造、旧计划或字段篡改。该模式是 Python 层的协议门禁，
+不声称密码学私有性。
+
+获批计划固定：`render-plan-v1-budgeted-explicit`、本次实际重验证所用
+`ApplicationLimits.version`、sampling policy version、
+`numeric-executor-v1-postorder-float64`，以及 Spec 的 active limits contract。计划中的
+`limits_version` 仅表示 Builder 使用该版本重新验证和预算；不声称上游 viewport resolver
+使用过同一版本。
+
+阶段 8C-1 不创建正式 x/y 数组，不实现 sampler、分段、振荡诊断执行、Figure/Canvas、PNG
+renderer、Qt、Matplotlib、Actor 或 UI。
 
 所有阶段 6、7 用户错误均返回中文 `user_message`、原始输入 `SourceSpan` 和 `recoverable=True`。`technical_message` 只包含脱敏类别、计数或 token kind，不包含完整原始公式、堆栈、本地路径，也不暴露内部规范化偏移。
 

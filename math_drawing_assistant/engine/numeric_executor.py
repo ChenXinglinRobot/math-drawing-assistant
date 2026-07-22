@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Literal, TypeAlias
+from typing import Final, Literal, TypeAlias
 
 import numpy as np
 from numpy.typing import NDArray
@@ -31,6 +31,11 @@ from math_drawing_assistant.models.restricted_ast import (
 Float64Vector: TypeAlias = NDArray[np.float64]
 NumericValue: TypeAlias = float | Float64Vector
 _ValueKind: TypeAlias = Literal["scalar", "input", "temporary"]
+
+# Read-only contract identifier consumed by stage 8C-1 planning.  It covers the
+# exact postorder evaluator and its max-live-vector cost semantics, not a cache
+# or a sampler implementation.
+NUMERIC_EXECUTOR_CONTRACT_VERSION: Final[str] = "numeric-executor-v1-postorder-float64"
 
 _EXACT_NODE_TYPES = frozenset(
     {

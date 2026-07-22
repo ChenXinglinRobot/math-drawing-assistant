@@ -24,7 +24,15 @@ from math_drawing_assistant.models.restricted_ast import (
     UnaryOperator,
     VariableName,
 )
-from math_drawing_assistant.models.render_plan import RenderPlan
+from math_drawing_assistant.models.render_plan import (
+    DEFAULT_EXPLICIT_SAMPLING_POLICY,
+    RENDER_PLAN_CONTRACT_VERSION,
+    ExplicitRenderItemPlan,
+    ExplicitSamplingPolicy,
+    RenderMemoryBudget,
+    RenderPlan,
+    validate_approved_render_plan,
+)
 from math_drawing_assistant.models.requests import PlotItemRequest, PlotSceneRequest
 from math_drawing_assistant.models.results import PlotItemResult, PlotSceneResult
 from math_drawing_assistant.models.state import (
@@ -43,6 +51,8 @@ __all__ = [
     "ErrorInfo",
     "ExplicitFunctionSpec",
     "ExplicitExpressionSource",
+    "ExplicitRenderItemPlan",
+    "ExplicitSamplingPolicy",
     "BinaryOpNode",
     "BinaryOperator",
     "ConstantName",
@@ -58,6 +68,9 @@ __all__ = [
     "PlotSceneResult",
     "PlotSceneSpec",
     "NumberNode",
+    "DEFAULT_EXPLICIT_SAMPLING_POLICY",
+    "RENDER_PLAN_CONTRACT_VERSION",
+    "RenderMemoryBudget",
     "RenderPlan",
     "RestrictedExpression",
     "ResolvedViewport",
@@ -72,5 +85,6 @@ __all__ = [
     "UnaryOpNode",
     "UnaryOperator",
     "ValidatedExplicitExpression",
+    "validate_approved_render_plan",
     "VariableName",
 ]
