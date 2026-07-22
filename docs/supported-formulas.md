@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
-文档版本：stage-7-restricted-analysis-v1-worktree
-状态：阶段 7 受限分析已在工作区实现并通过定向自动测试，等待总架构师只读验收；本文不声明阶段验收通过
+文档版本：stage-8a-safe-numeric-v1-worktree
+状态：阶段 7 已通过；阶段 8A 的单项 Spec 衔接和安全数值执行已在工作区实现，并通过定点、Engine、阶段 5–7 定向与全量自动测试；本文不声明阶段 8B、8C 或阶段 9 已实现
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
@@ -26,6 +26,18 @@
 阶段 6 的四个模块仍只负责规范化、词法化、SourceMap 和等号拆分，既有语义未改变。阶段 7 不导入或调用 SymPy，不执行数值求值、常量折叠、化简、展开、移项、求解、采样、视口或渲染。`ValidatedExplicitExpression` 是尚未注入 `item_id` 的阶段 7 中间安全产物，不是可直接渲染的 `PlotItemSpec`；后续阶段必须结合调用者持有的 `PlotItemRequest.item_id` 创建正式 Spec。
 
 独立的 parser、classifier 和 validator typed 接口仍公开用于组合与单元测试。正式调用链不得用 parser 或 classifier 的成功结果绕过 validator 构造后续 Spec。`ValidatedExplicitExpression` 的普通公共构造会明确拒绝；正式入口在 validator 成功后签发 parser/active limits 版本一致的内部 contract，再通过 model-owned 工厂重查整棵 AST、自由变量和 span 后构造结果。这是当前正式调用图和公开构造不变量，不宣称 Python 层具有密码学意义上的绝对私有性。
+
+阶段 8A 增加以下唯一单项生产衔接，不重新运行 parser，也不接受原始文本、普通 AST、SymPy 表达式或 callable：
+
+```text
+PlotItemRequest + ValidatedExplicitExpression
+→ build_explicit_function_spec
+→ ExplicitFunctionSpec
+→ build_explicit_scene_spec
+→ PlotSceneSpec(items=(spec,))
+```
+
+`item_id` 只来自 `PlotItemRequest`；数学表达式及其 normalized/source spans、source form、free variables 和 limits version 只来自 `ValidatedExplicitExpression`。请求中的 `AUTO` 或 `EXPLICIT_FUNCTION` 可进入该显函数衔接，其他 PlotKind 拒绝。Scene tuple 顺序是权威顺序，`display_order` 不复制进 Spec。
 
 ## 字符与 token 白名单
 
@@ -349,6 +361,62 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 | 静态安全 | 禁止动态执行、`ast.parse`/`ast.literal_eval` 和通用数学 parser API；Models 不导入 Engine；validated result 使用唯一正式工厂调用点；生产入口顺序 | `tests/engine/test_stage7_safety.py` |
 
 随机健壮性测试只接受成功的 `ValidatedExplicitExpression` 或结构化 `ErrorInfo`。它使用 Python 标准库固定种子，不引入 Hypothesis 或其他依赖；这些生成条目包含重复值，只是有界的最小健壮性与确定性证据，不是同等数量的独立案例或形式化安全证明。当前测试没有“完全不产生日志”的断言，因此本文不作该声明。
+
+## 阶段 8A 单项 Spec 与 validated receipt 契约
+
+`ValidatedExplicitExpression` 继续只能由阶段 7 正式入口创建，并在结果内保留 model-owned、不可公开签发的 typed receipt。阶段 8A 使用前重新核对：结果精确类型、receipt seal、结果/receipt/active limits 三方版本、完整受限 AST、free variables、root spans、source form 和固定 `EXPLICIT_FUNCTION` 类型。缺少 receipt 的旧对象、伪造 receipt、普通 `RestrictedExpression`、字符串或不兼容 limits version 统一作为内部契约错误拒绝。
+
+`ExplicitFunctionSpec` 只保存：
+
+```text
+item_id: str
+validated_expression: ValidatedExplicitExpression
+```
+
+其 `expression`、normalized/source 元数据、free variables、limits version 和固定 plot kind 都是 validated result 的只读属性投影，不存在第二份可失配数学 payload。单项 Scene 仍是通用 `PlotSceneSpec(items=(spec,))`。
+
+## 阶段 8A 安全 NumPy 数值执行契约
+
+生产入口 `execute_explicit_function` 只接收 `ExplicitFunctionSpec` 和调用者提供的 x batch。x 必须是精确 `numpy.ndarray`、dtype 严格为 `float64`、形状严格为一维且全部元素有限；不接收 list、float32、object、complex、二维数组、NaN 或无穷输入。执行不修改输入，不缓存 Spec、程序、输入或输出。
+
+执行器把当前六种受限 AST 节点编译为局部后序 typed 指令 tuple，只用显式分支实现以下封闭联合：
+
+```text
+NumberNode
+SymbolNode(x)
+ConstantNode(pi, E)
+UnaryOpNode(+/-)
+BinaryOpNode(+ - * / power)
+FunctionCallNode(sin cos tan sqrt abs exp ln lg log)
+```
+
+不存在任意模块、函数或名称注入；未知节点、运算符、常量、函数、非 x symbol、栈契约或 validated/limits mismatch 都返回不可恢复的结构化 `internal_error`。正式 Engine 继续禁止调用 `eval`、`exec`、`compile`、`ast.parse`、`sympify`、`parse_expr`、`parse_latex` 或 `lambdify`。
+
+所有数值运算在局部 `numpy.errstate(divide="ignore", invalid="ignore", over="ignore", under="ignore")` 内执行。锁定 NumPy 2.5.1 下：除零保留带符号无穷；sqrt 和对数定义域外保留 NaN/负无穷；exp 溢出保留正无穷；负底数整数幂保持实数；下溢的有限零保留；`RuntimeWarning` 不逃逸。执行器不把这些数值域结果误报为结构错误。
+
+常量表达式最终规范为 Python `float`。含 x 的结果必须严格为 `(batch_length,)` float64 数组；Python scalar、NumPy float64 scalar和零维 float64 仅在标量指令边界接受。错误维度、错误长度、object、complex 或其他 dtype 统一结构化拒绝。向量结果由执行器独立持有并设为只读；`x` 恒等表达式通过最终所有权复制避免输出别名修改输入。
+
+`estimate_numeric_execution_cost` 在不执行表达式的情况下模拟同一后序栈策略，并返回：
+
+```text
+NumericExecutionCost.max_live_float64_vectors
+```
+
+计数包含整个调用期间存活的调用者 x 向量、栈中仍存活的执行器临时 float64 向量，以及 operand 尚存活时正在分配的输出向量。`log(x,b)` 按实际 `log(value)` 临时向量与随后 divide 输出分别计数；根结果仍别名 x 时计入最终所有权复制。该值来自具体执行/释放顺序，不使用固定魔法倍数，也不估算 NumPy 内部非 float64 workspace。
+
+阶段 8A 不生成采样网格，不调用 `np.linspace`，不广播常量到 batch，不解析视口，不处理渐近线/分段/密集振荡，不构造 RenderPlan、sampler、renderer、Actor 或 UI，也不实现多项 Scene。
+
+## 阶段 8A 自动测试矩阵
+
+| 类别 | 覆盖内容 | 自动测试 |
+|---|---|---|
+| 单项 Spec | request item_id、AUTO/显函数 kind、validated AST identity、单项 Scene tuple、无 display_order 副本 | `tests/engine/test_spec_builder.py` |
+| Spec 拒绝 | 空白/非字符串 item_id、kind mismatch、普通 AST/字符串注入、旧/伪造 receipt、不兼容 limits version | `tests/engine/test_spec_builder.py` |
+| 数值节点 | 常量、x、一元正负、五种二元运算、全部九个函数名 | `tests/engine/test_numeric_executor.py` |
+| 指数契约 | 整数、带符号整数、整数字面量幂链、`2^x`；`x^x`/复合指数仍由阶段 7 拒绝 | `tests/engine/test_numeric_executor.py` |
+| 输入/输出 | 严格有限一维 float64、Python/零维标量、严格一维结果、错误形状/长度/dtype、输入未修改、结果独立所有权 | `tests/engine/test_numeric_executor.py` |
+| 浮点行为 | 除零、sqrt/ln/lg/log 域外、exp 溢出、负底数整数幂、下溢、无 RuntimeWarning | `tests/engine/test_numeric_executor.py` |
+| 成本与安全 | 精确策略峰值、无缓存、未知 typed 节点/运算符/函数、public contract tamper | `tests/engine/test_numeric_executor.py` |
 
 ## 版本与变更规则
 

@@ -3,6 +3,7 @@
 from math_drawing_assistant.models.diagnostics import StageTiming
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo, SourceSpan
 from math_drawing_assistant.models.plot_specs import (
+    ExplicitFunctionSpec,
     ExplicitExpressionSource,
     PlotItemSpec,
     PlotSceneSpec,
@@ -40,6 +41,7 @@ __all__ = [
     "AspectRequest",
     "ErrorCode",
     "ErrorInfo",
+    "ExplicitFunctionSpec",
     "ExplicitExpressionSource",
     "BinaryOpNode",
     "BinaryOperator",

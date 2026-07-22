@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypeAlias, runtime_checkable
 
 from math_drawing_assistant.models.errors import SourceSpan
@@ -64,6 +64,7 @@ class ValidatedExplicitExpression:
     source_form: ExplicitExpressionSource
     free_variables: tuple[Literal["x"], ...]
     limits_version: str
+    _contract: _ValidatedExpressionContract = field(repr=False)
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         raise TypeError(
@@ -119,7 +120,127 @@ def _create_validated_explicit_expression(
     object.__setattr__(result, "source_form", source_form)
     object.__setattr__(result, "free_variables", free_variables)
     object.__setattr__(result, "limits_version", contract.limits_version)
-    return result
+    object.__setattr__(result, "_contract", contract)
+    return _validate_validated_explicit_expression(
+        result,
+        active_limits_version=contract.limits_version,
+    )
+
+
+def _validate_validated_explicit_expression(
+    value: object,
+    *,
+    active_limits_version: str,
+) -> ValidatedExplicitExpression:
+    """Recheck the stage 7 receipt before a later trusted boundary uses it."""
+
+    if type(value) is not ValidatedExplicitExpression:
+        raise TypeError("value must be an exact ValidatedExplicitExpression.")
+    if type(active_limits_version) is not str or not active_limits_version:
+        raise ValueError("active_limits_version must be a non-empty string.")
+
+    contract = getattr(value, "_contract", None)
+    if type(contract) is not _ValidatedExpressionContract:
+        raise TypeError("validated expression is missing its issued contract.")
+    contract.__post_init__()
+    if value.limits_version != contract.limits_version:
+        raise ValueError("validated expression and receipt versions must match.")
+    if value.limits_version != active_limits_version:
+        raise ValueError("validated expression limits version is not active.")
+
+    variables = _validate_restricted_expression(value.expression)
+    if "y" in variables:
+        raise ValueError("A validated explicit expression must not contain y.")
+    expected_free_variables: tuple[Literal["x"], ...] = (
+        ("x",) if "x" in variables else ()
+    )
+    if type(value.free_variables) is not tuple:
+        raise TypeError("free_variables must be a tuple.")
+    if value.free_variables != expected_free_variables:
+        raise ValueError("free_variables must match the restricted AST.")
+    if type(value.normalized_input) is not str or not value.normalized_input:
+        raise ValueError("normalized_input must be a non-empty string.")
+    if type(value.normalized_span) is not SourceSpan:
+        raise TypeError("normalized_span must be a SourceSpan.")
+    if type(value.source_span) is not SourceSpan:
+        raise TypeError("source_span must be a SourceSpan.")
+    if value.expression.normalized_span != value.normalized_span:
+        raise ValueError("normalized_span must match the expression root.")
+    if value.expression.source_span != value.source_span:
+        raise ValueError("source_span must match the expression root.")
+    if value.source_form not in {"expression", "y_equals", "equals_y"}:
+        raise ValueError("source_form must be a published explicit source form.")
+    if value.plot_kind is not PlotKind.EXPLICIT_FUNCTION:
+        raise ValueError("validated expression must be an explicit function.")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ExplicitFunctionSpec:
+    """One explicit function bound to its stable request item identity."""
+
+    item_id: str
+    validated_expression: ValidatedExplicitExpression
+
+    def __post_init__(self) -> None:
+        if type(self.item_id) is not str or not self.item_id.strip():
+            raise ValueError("ExplicitFunctionSpec.item_id must be a valid string.")
+        if type(self.validated_expression) is not ValidatedExplicitExpression:
+            raise TypeError(
+                "validated_expression must be a ValidatedExplicitExpression.",
+            )
+        _validate_validated_explicit_expression(
+            self.validated_expression,
+            active_limits_version=self.validated_expression.limits_version,
+        )
+
+    @property
+    def expression(self) -> RestrictedExpression:
+        """Return the exact restricted AST issued by stage 7."""
+
+        return self.validated_expression.expression
+
+    @property
+    def normalized_input(self) -> str:
+        """Return the normalized expression snapshot from stage 7."""
+
+        return self.validated_expression.normalized_input
+
+    @property
+    def normalized_span(self) -> SourceSpan:
+        """Return the normalized expression root span."""
+
+        return self.validated_expression.normalized_span
+
+    @property
+    def source_span(self) -> SourceSpan:
+        """Return the original expression root span."""
+
+        return self.validated_expression.source_span
+
+    @property
+    def source_form(self) -> ExplicitExpressionSource:
+        """Return whether the expression came from an expression or direct y form."""
+
+        return self.validated_expression.source_form
+
+    @property
+    def free_variables(self) -> tuple[Literal["x"], ...]:
+        """Return the validated free-variable tuple."""
+
+        return self.validated_expression.free_variables
+
+    @property
+    def limits_version(self) -> str:
+        """Return the limits contract that validated this expression."""
+
+        return self.validated_expression.limits_version
+
+    @property
+    def plot_kind(self) -> PlotKind:
+        """Return the only plot kind represented by this specification."""
+
+        return PlotKind.EXPLICIT_FUNCTION
 
 
 @runtime_checkable

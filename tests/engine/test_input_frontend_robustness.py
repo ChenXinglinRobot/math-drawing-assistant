@@ -107,11 +107,27 @@ def test_stage_6_modules_have_no_forbidden_dependencies_or_execution_calls() -> 
     module_paths = tuple(root.glob("*.py"))
     assert module_paths
 
+    stage_6_module_paths = tuple(
+        root / module_name
+        for module_name in (
+            "normalizer.py",
+            "source_map.py",
+            "tokenizer.py",
+            "equation_splitter.py",
+        )
+    )
+    assert all(path.is_file() for path in stage_6_module_paths)
+
     forbidden_imports = ("PySide6", "sympy", "numpy", "matplotlib")
     forbidden_calls = ("eval(", "exec(", "sympify(", "parse_expr(", "solve(")
+    for path in stage_6_module_paths:
+        source = path.read_text(encoding="utf-8")
+        for marker in forbidden_imports:
+            assert marker not in source
+
     for path in module_paths:
         source = path.read_text(encoding="utf-8")
-        for marker in (*forbidden_imports, *forbidden_calls):
+        for marker in forbidden_calls:
             assert marker not in source
 
 

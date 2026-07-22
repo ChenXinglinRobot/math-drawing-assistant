@@ -104,6 +104,24 @@ def test_bounded_mixed_fuzz_is_deterministic_and_never_leaks_an_exception() -> N
 
 def test_engine_has_no_forbidden_execution_or_general_math_parser_calls() -> None:
     engine_root = Path(__file__).parents[2] / "math_drawing_assistant" / "engine"
+    engine_paths = tuple(engine_root.glob("*.py"))
+    assert engine_paths
+    assert "numeric_executor.py" in {path.name for path in engine_paths}
+
+    stage_6_and_7_module_paths = tuple(
+        engine_root / module_name
+        for module_name in (
+            "normalizer.py",
+            "source_map.py",
+            "tokenizer.py",
+            "equation_splitter.py",
+            "parser.py",
+            "plot_classifier.py",
+            "validators.py",
+        )
+    )
+    assert all(path.is_file() for path in stage_6_and_7_module_paths)
+
     call_pattern = re.compile(
         r"\b(?:eval|exec|compile|ast\s*\.\s*(?:parse|literal_eval)|sympify|"
         r"parse_expr|parse_latex|solve|expand|simplify|factor|lambdify)\s*\(",
@@ -113,9 +131,12 @@ def test_engine_has_no_forbidden_execution_or_general_math_parser_calls() -> Non
         re.MULTILINE,
     )
 
-    for path in engine_root.glob("*.py"):
+    for path in engine_paths:
         source = path.read_text(encoding="utf-8")
         assert call_pattern.search(source) is None, path
+
+    for path in stage_6_and_7_module_paths:
+        source = path.read_text(encoding="utf-8")
         assert import_pattern.search(source) is None, path
 
 
