@@ -27,6 +27,21 @@ class ErrorCode(str, Enum):
     MULTIPLE_EQUALS = "multiple_equals"
     EQUATION_LEFT_EMPTY = "equation_left_empty"
     EQUATION_RIGHT_EMPTY = "equation_right_empty"
+    PARSER_SYNTAX_ERROR = "parser_syntax_error"
+    FUNCTION_CALL_REQUIRED = "function_call_required"
+    FUNCTION_ARGUMENT_ERROR = "function_argument_error"
+    LOG_REQUIRES_BASE = "log_requires_base"
+    INVALID_LOG_BASE = "invalid_log_base"
+    IMPLICIT_MULTIPLICATION_NOT_ALLOWED = "implicit_multiplication_not_allowed"
+    NESTED_ABSOLUTE_VALUE = "nested_absolute_value"
+    AST_NODE_LIMIT_EXCEEDED = "ast_node_limit_exceeded"
+    AST_DEPTH_LIMIT_EXCEEDED = "ast_depth_limit_exceeded"
+    RATIONAL_LITERAL_TOO_LONG = "rational_literal_too_long"
+    EXPONENT_OUT_OF_RANGE = "exponent_out_of_range"
+    UNSUPPORTED_EXPONENT = "unsupported_exponent"
+    INVALID_AST = "invalid_ast"
+    EXPLICIT_FUNCTION_Y_NOT_ALLOWED = "explicit_function_y_not_allowed"
+    UNSUPPORTED_EQUATION = "unsupported_equation"
 
 
 @dataclass(frozen=True, slots=True)
