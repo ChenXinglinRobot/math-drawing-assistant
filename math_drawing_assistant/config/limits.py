@@ -19,7 +19,7 @@ class LimitStatus(str, Enum):
     BENCHMARK_FROZEN = "benchmark_frozen"
 
 
-LIMITS_VERSION: Final[str] = "limits-v1-initial-safety"
+LIMITS_VERSION: Final[str] = "limits-v2-viewport-initial-safety"
 
 
 def _require_integer(value: int, name: str) -> None:
@@ -80,6 +80,23 @@ class ApplicationLimits:
     log_backup_count: int
     max_log_field_text_length: int
 
+    viewport_probe_points: int
+    max_viewport_probe_bytes: int
+    min_viewport_span: int
+    max_viewport_span: int
+    max_viewport_absolute_coordinate: int
+    default_auto_x_min: int
+    default_auto_x_max: int
+    fallback_auto_x_min: int
+    fallback_auto_x_max: int
+    fallback_auto_y_min: int
+    fallback_auto_y_max: int
+    viewport_quantile_low_percent: int
+    viewport_quantile_high_percent: int
+    viewport_relative_padding_percent: int
+    viewport_absolute_padding: int
+    min_finite_probe_values: int
+
     def __post_init__(self) -> None:
         if not isinstance(self.version, str):
             raise TypeError("version must be a string.")
@@ -88,12 +105,20 @@ class ApplicationLimits:
         if not isinstance(self.status, LimitStatus):
             raise TypeError("status must be a LimitStatus.")
 
+        signed_range_fields = {
+            "default_auto_x_min",
+            "default_auto_x_max",
+            "fallback_auto_x_min",
+            "fallback_auto_x_max",
+            "fallback_auto_y_min",
+            "fallback_auto_y_max",
+        }
         for field in fields(self):
             if field.name in {"version", "status"}:
                 continue
             value = getattr(self, field.name)
             _require_integer(value, field.name)
-            if value <= 0:
+            if field.name not in signed_range_fields and value <= 0:
                 raise ValueError(f"{field.name} must be positive.")
 
         self._validate_relationships()
@@ -114,6 +139,50 @@ class ApplicationLimits:
             raise ValueError(
                 "max_branches_per_item must not exceed max_total_branches.",
             )
+        if self.min_viewport_span > self.max_viewport_span:
+            raise ValueError(
+                "min_viewport_span must not exceed max_viewport_span.",
+            )
+        if self.viewport_quantile_low_percent >= self.viewport_quantile_high_percent:
+            raise ValueError(
+                "viewport_quantile_low_percent must be below "
+                "viewport_quantile_high_percent.",
+            )
+        if self.viewport_quantile_high_percent > 100:
+            raise ValueError("viewport_quantile_high_percent must not exceed 100.")
+        if self.min_finite_probe_values > self.viewport_probe_points:
+            raise ValueError(
+                "min_finite_probe_values must not exceed viewport_probe_points.",
+            )
+        self._validate_viewport_range(
+            self.default_auto_x_min,
+            self.default_auto_x_max,
+            "default_auto_x",
+        )
+        self._validate_viewport_range(
+            self.fallback_auto_x_min,
+            self.fallback_auto_x_max,
+            "fallback_auto_x",
+        )
+        self._validate_viewport_range(
+            self.fallback_auto_y_min,
+            self.fallback_auto_y_max,
+            "fallback_auto_y",
+        )
+
+    def _validate_viewport_range(
+        self,
+        minimum: int,
+        maximum: int,
+        name: str,
+    ) -> None:
+        if minimum >= maximum:
+            raise ValueError(f"{name}_min must be smaller than {name}_max.")
+        if max(abs(minimum), abs(maximum)) > self.max_viewport_absolute_coordinate:
+            raise ValueError(f"{name} exceeds max_viewport_absolute_coordinate.")
+        span = maximum - minimum
+        if span < self.min_viewport_span or span > self.max_viewport_span:
+            raise ValueError(f"{name} span is outside the viewport span limits.")
 
     def validate_input_complexity(
         self,
@@ -266,4 +335,20 @@ DEFAULT_LIMITS: Final[ApplicationLimits] = ApplicationLimits(
     max_log_file_bytes=5 * 1_024 * 1_024,
     log_backup_count=3,
     max_log_field_text_length=512,
+    viewport_probe_points=1_024,
+    max_viewport_probe_bytes=16 * 1_024 * 1_024,
+    min_viewport_span=1,
+    max_viewport_span=1_000_000,
+    max_viewport_absolute_coordinate=10_000_000,
+    default_auto_x_min=-10,
+    default_auto_x_max=10,
+    fallback_auto_x_min=-10,
+    fallback_auto_x_max=10,
+    fallback_auto_y_min=-10,
+    fallback_auto_y_max=10,
+    viewport_quantile_low_percent=5,
+    viewport_quantile_high_percent=95,
+    viewport_relative_padding_percent=10,
+    viewport_absolute_padding=1,
+    min_finite_probe_values=2,
 )

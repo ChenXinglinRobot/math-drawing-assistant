@@ -193,7 +193,7 @@ def test_resolved_viewport_rejects_invalid_final_ranges(
         "y_min": -1.0,
         "y_max": 1.0,
         "aspect": AspectRequest.AUTO,
-        "source": ViewportSource.AUTO,
+        "source": ViewportSource.AUTO_PROBE,
     }
     resolved_kwargs.update(kwargs)
 
@@ -209,6 +209,14 @@ def test_task_phase_has_only_the_six_approved_values() -> None:
         "REVIEWING",
         "RENDERING",
         "SHUTTING_DOWN",
+    ]
+
+
+def test_viewport_source_has_only_manual_probe_and_fallback_origins() -> None:
+    assert [source.name for source in ViewportSource] == [
+        "MANUAL",
+        "AUTO_PROBE",
+        "AUTO_FALLBACK",
     ]
 
 

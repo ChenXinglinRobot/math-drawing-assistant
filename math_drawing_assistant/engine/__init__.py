@@ -38,6 +38,10 @@ from math_drawing_assistant.engine.tokenizer import (
     TokenKind,
     tokenize,
 )
+from math_drawing_assistant.engine.viewport_resolver import (
+    ViewportResolution,
+    resolve_single_explicit_viewport,
+)
 from math_drawing_assistant.engine.validators import (
     ExplicitValidation,
     analyze_explicit_function,
@@ -64,6 +68,7 @@ __all__ = [
     "SourceMap",
     "Token",
     "TokenKind",
+    "ViewportResolution",
     "analyze_explicit_function",
     "build_explicit_function_spec",
     "build_explicit_scene_spec",
@@ -72,6 +77,7 @@ __all__ = [
     "estimate_numeric_execution_cost",
     "execute_explicit_function",
     "parse_input",
+    "resolve_single_explicit_viewport",
     "split_equation",
     "tokenize",
     "validate_explicit_candidate",

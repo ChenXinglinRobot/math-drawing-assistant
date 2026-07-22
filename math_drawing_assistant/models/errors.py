@@ -42,6 +42,14 @@ class ErrorCode(str, Enum):
     INVALID_AST = "invalid_ast"
     EXPLICIT_FUNCTION_Y_NOT_ALLOWED = "explicit_function_y_not_allowed"
     UNSUPPORTED_EQUATION = "unsupported_equation"
+    INVALID_VIEWPORT = "invalid_viewport"
+    VIEWPORT_PROBE_BUDGET_EXCEEDED = "viewport_probe_budget_exceeded"
+
+
+class ViewportWarningCode(str, Enum):
+    """Published warnings emitted by the stage 8B viewport boundary."""
+
+    AUTO_VIEWPORT_FALLBACK = "auto_viewport_fallback"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,3 +129,38 @@ class ErrorInfo:
             raise TypeError(f"ErrorInfo.{name} must be a string or None.")
         if not value.strip():
             raise ValueError(f"ErrorInfo.{name} must not be empty when supplied.")
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ViewportWarning:
+    """A small, typed, display-safe warning for a resolved viewport."""
+
+    code: ViewportWarningCode
+    user_message: str
+    technical_message: str | None = None
+    item_id: str | None = None
+
+    def __init__(
+        self,
+        code: ViewportWarningCode | str,
+        user_message: str,
+        technical_message: str | None = None,
+        item_id: str | None = None,
+    ) -> None:
+        try:
+            stable_code = ViewportWarningCode(code)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "ViewportWarning.code must be a registered warning code.",
+            ) from exc
+        if not isinstance(user_message, str):
+            raise TypeError("ViewportWarning.user_message must be a string.")
+        if not user_message.strip():
+            raise ValueError("ViewportWarning.user_message must not be empty.")
+        ErrorInfo._validate_optional_text(technical_message, "technical_message")
+        ErrorInfo._validate_optional_text(item_id, "item_id")
+
+        object.__setattr__(self, "code", stable_code)
+        object.__setattr__(self, "user_message", user_message)
+        object.__setattr__(self, "technical_message", technical_message)
+        object.__setattr__(self, "item_id", item_id)

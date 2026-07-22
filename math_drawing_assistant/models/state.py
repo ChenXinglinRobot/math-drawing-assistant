@@ -49,5 +49,6 @@ class AspectRequest(str, Enum):
 class ViewportSource(str, Enum):
     """Where a resolved viewport range came from."""
 
-    AUTO = "auto"
     MANUAL = "manual"
+    AUTO_PROBE = "auto_probe"
+    AUTO_FALLBACK = "auto_fallback"

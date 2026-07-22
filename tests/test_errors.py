@@ -9,6 +9,10 @@ import re
 import pytest
 
 from math_drawing_assistant.models import ErrorCode, ErrorInfo, SourceSpan
+from math_drawing_assistant.models.errors import (
+    ViewportWarning,
+    ViewportWarningCode,
+)
 
 
 def test_existing_error_code_values_remain_stable() -> None:
@@ -19,6 +23,19 @@ def test_existing_error_code_values_remain_stable() -> None:
 def test_all_error_code_values_are_unique() -> None:
     values = [code.value for code in ErrorCode]
     assert len(values) == len(set(values))
+
+
+def test_viewport_warnings_use_a_small_registered_typed_contract() -> None:
+    warning = ViewportWarning(
+        code="auto_viewport_fallback",
+        user_message="A fallback is used.",
+        item_id="item-1",
+    )
+
+    assert warning.code is ViewportWarningCode.AUTO_VIEWPORT_FALLBACK
+    assert warning.item_id == "item-1"
+    with pytest.raises(ValueError, match="registered"):
+        ViewportWarning(code="future_warning", user_message="No.")
 
 
 def test_error_info_is_frozen_and_normalizes_registered_strings() -> None:

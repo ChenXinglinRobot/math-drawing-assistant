@@ -52,13 +52,22 @@ def test_default_limits_are_frozen_positive_and_versioned() -> None:
     assert DEFAULT_LIMITS.__dataclass_params__.frozen is True
     assert "__dict__" not in ApplicationLimits.__dict__
 
+    signed_range_fields = {
+        "default_auto_x_min",
+        "default_auto_x_max",
+        "fallback_auto_x_min",
+        "fallback_auto_x_max",
+        "fallback_auto_y_min",
+        "fallback_auto_y_max",
+    }
     for field in fields(DEFAULT_LIMITS):
         if field.name in {"version", "status"}:
             continue
         value = getattr(DEFAULT_LIMITS, field.name)
         assert isinstance(value, int)
         assert not isinstance(value, bool)
-        assert value > 0
+        if field.name not in signed_range_fields:
+            assert value > 0
 
     with pytest.raises(FrozenInstanceError):
         DEFAULT_LIMITS.max_tokens = DEFAULT_LIMITS.max_tokens + 1  # type: ignore[misc]  # frozen contract probe
@@ -90,6 +99,18 @@ def test_limit_relationships_are_validated_during_construction() -> None:
         replace(
             DEFAULT_LIMITS,
             max_branches_per_item=DEFAULT_LIMITS.max_total_branches + 1,
+        )
+    with pytest.raises(ValueError, match="viewport_span"):
+        replace(
+            DEFAULT_LIMITS,
+            min_viewport_span=DEFAULT_LIMITS.max_viewport_span + 1,
+        )
+    with pytest.raises(ValueError, match="quantile"):
+        replace(
+            DEFAULT_LIMITS,
+            viewport_quantile_low_percent=(
+                DEFAULT_LIMITS.viewport_quantile_high_percent
+            ),
         )
 
 

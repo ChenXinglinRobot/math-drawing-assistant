@@ -253,13 +253,13 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 
 配置类型：`ApplicationLimits`
 唯一默认实例：`DEFAULT_LIMITS`
-版本：`limits-v1-initial-safety`
+版本：`limits-v2-viewport-initial-safety`
 状态：`initial_safety`；这些值是初始安全上限，不是性能承诺。若代码值变化，必须在同一变更同步本表和边界测试。
 
 <!-- LIMIT_FIELD_INDEX_START -->
 | 字段 | 语义 | 当前值 | 当前用途 |
 |---|---|---:|---|
-| `version` | 稳定 limits 契约版本 | `limits-v1-initial-safety` | 读取 |
+| `version` | 稳定 limits 契约版本 | `limits-v2-viewport-initial-safety` | 读取 |
 | `status` | 初始安全或基准冻结状态 | `initial_safety` | 读取 |
 | `max_input_characters` | 原始输入最大字符数 | 4,096 | normalizer 在删除/展开前检查 |
 | `max_tokens` | 最大 token 数 | 1,024 | tokenizer 每次追加前检查 |
@@ -287,6 +287,22 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 | `max_log_file_bytes` | 单个日志文件容量 | 5,242,880 bytes | 阶段 5 日志使用 |
 | `log_backup_count` | 日志轮转备份数量 | 3 | 阶段 5 日志使用 |
 | `max_log_field_text_length` | 日志字段文本最大长度 | 512 | 阶段 5 日志使用 |
+| `viewport_probe_points` | 自动视口数值探测的固定 float64 点数 | 1,024 | 阶段 8B 在预算通过后创建一维网格 |
+| `max_viewport_probe_bytes` | 单项自动视口探测的独立硬内存预算 | 16 MiB | 阶段 8B 在 `linspace` 前估算并拒绝超限 |
+| `min_viewport_span` | 最终 x/y 视口最小跨度 | 1 | 阶段 8B 手动、探测和回退范围共同使用 |
+| `max_viewport_span` | 最终 x/y 视口最大跨度 | 1,000,000 | 阶段 8B 手动、探测和回退范围共同使用 |
+| `max_viewport_absolute_coordinate` | 最终视口边界绝对坐标上限 | 10,000,000 | 阶段 8B 所有最终边界检查 |
+| `default_auto_x_min` | 自动视口未提供 x 时的默认 x 下界 | -10 | 阶段 8B 自动探测输入 |
+| `default_auto_x_max` | 自动视口未提供 x 时的默认 x 上界 | 10 | 阶段 8B 自动探测输入 |
+| `fallback_auto_x_min` | 自动探测不可靠且未提供 x 时的回退 x 下界 | -10 | 阶段 8B 回退 |
+| `fallback_auto_x_max` | 自动探测不可靠且未提供 x 时的回退 x 上界 | 10 | 阶段 8B 回退 |
+| `fallback_auto_y_min` | 自动探测不可靠时的回退 y 下界 | -10 | 阶段 8B 回退 |
+| `fallback_auto_y_max` | 自动探测不可靠时的回退 y 上界 | 10 | 阶段 8B 回退 |
+| `viewport_quantile_low_percent` | 有限 y 样本的稳健下分位百分数 | 5 | 阶段 8B 探测统计 |
+| `viewport_quantile_high_percent` | 有限 y 样本的稳健上分位百分数 | 95 | 阶段 8B 探测统计 |
+| `viewport_relative_padding_percent` | 稳健 y 范围的相对留白百分数 | 10 | 阶段 8B 探测统计 |
+| `viewport_absolute_padding` | 稳健 y 范围的绝对留白 | 1 | 阶段 8B 探测统计 |
+| `min_finite_probe_values` | 接受自动探测所需的最少有限 y 值数 | 2 | 阶段 8B 不足时受控回退 |
 <!-- LIMIT_FIELD_INDEX_END -->
 
 阶段 6 不复制这些数值到 Python 实现或测试；实现直接读取传入的 `ApplicationLimits`/`DEFAULT_LIMITS`，边界测试从 `DEFAULT_LIMITS` 生成输入。
@@ -329,7 +345,36 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 | `invalid_ast` | 防御性验证发现非封闭节点、名称或预算品牌 | 阶段 7 validator |
 | `explicit_function_y_not_allowed` | 显函数候选表达式包含 y | 阶段 7 classifier/validator |
 | `unsupported_equation` | 未形成直接显函数候选的方程形式当前不支持；不携带真实曲线类别判断 | 阶段 7 classifier |
+| `invalid_viewport` | 视口请求的边界、顺序、跨度或坐标范围无效 | 阶段 8B resolver |
+| `viewport_probe_budget_exceeded` | 自动视口探测的独立预分配预算不足或获批分配失败 | 阶段 8B resolver |
 <!-- ERROR_CODE_REGISTRY_END -->
+
+## 阶段 8B 单显函数视口解析契约
+
+阶段 8B 只接受一个 `PlotSceneSpec`，且其中恰有一个经阶段 8A 验证的
+`ExplicitFunctionSpec`，再加一个 `ViewportRequest` 与集中式
+`ApplicationLimits`。它不接受原始文本、token、AST、SymPy 对象或任意 callable，
+也不构建 `RenderPlan`、采样结果、渲染对象或 UI 状态。
+
+手动视口必须提供四个有限边界，满足严格顺序、跨度与坐标上限；成功时原样保留
+边界并给出 `ViewportSource.MANUAL`，不创建探测网格也不调用数值执行器。自动视口
+只能提供完整的 x 区间或完全不提供 x；未提供时使用 `default_auto_x_*`。自动 y 由
+解析器控制，任何 partial x、显式 y 或非法 x 都以 `ErrorInfo` 失败且不回退。
+
+自动探测先读取阶段 8A 的精确向量存活成本，并在分配前以
+`max_viewport_probe_bytes` 计入固定 x 网格、执行器峰值、返回向量、有限掩码、有限值
+压缩、分位数工作区和解析器缓冲区。预算或执行器契约失败不会返回视口，更不会回退。
+预算通过后才创建固定的一维 `float64` 网格；只使用有限 y 值，以集中式分位数和相对/绝对
+留白生成 y 范围。常量以 Python `float` 单独处理，并围绕常量值保证最小 y 跨度。
+
+若预算和执行器契约均成功、但数学探测结果不可靠（例如有限点不足或稳健统计不可用），
+返回受控 `ViewportSource.AUTO_FALLBACK` 与如下强类型警告。提供 x 时保留该 x，仅回退 y；
+未提供 x 时使用 `fallback_auto_x_*` 与 `fallback_auto_y_*`。正常探测成功使用
+`ViewportSource.AUTO_PROBE`。
+
+| 警告代码 | 含义 | 首次使用 |
+|---|---|---|
+| `auto_viewport_fallback` | 数学探测不可靠，使用集中式安全回退范围 | 阶段 8B resolver |
 
 所有阶段 6、7 用户错误均返回中文 `user_message`、原始输入 `SourceSpan` 和 `recoverable=True`。`technical_message` 只包含脱敏类别、计数或 token kind，不包含完整原始公式、堆栈、本地路径，也不暴露内部规范化偏移。
 
