@@ -564,7 +564,9 @@ minimum_direction_changes = max(1, threshold // 2) = 16
 maximum_samples_per_monotone_run = threshold * 2 = 64
 ```
 
-两项同时满足才警告。冻结诊断使用 x=`[-10,10]`、image_width=800、正式 N=1600：
+两项同时满足才警告。冻结诊断使用 x=`[-10,10]`、y viewport=`[-2,2]`、
+image_width=800、image_height=600、正式 N=1600。冻结诊断指标同时依赖 x/y viewport、
+image_width、image_height 和正式采样点数 N：
 
 | 公式 | significant direction changes | samples/monotone run | 期望 |
 |---|---:|---:|---|
