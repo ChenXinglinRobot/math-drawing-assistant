@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
-文档版本：stage-8c1-render-plan-budget-v1-worktree
-状态：阶段 7、8A、8B 已通过；阶段 8C-1 的单项 RenderPlan、正式标量预算和 approval receipt 已实现。本文不声明 8C-2、sampler 或阶段 9 已实现。
+文档版本：stage-8c2-explicit-sampler-v1-worktree
+状态：阶段 7、8A、8B、8C-1 已通过；阶段 8C-2 的 explicit sampler、分段、可见性、取消与采样诊断已在当前工作树实现并等待独立验收。本文不声明阶段 9 已开始或实现。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
@@ -271,19 +271,19 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 | `max_rational_denominator_digits` | 有理数分母最大位数 | 128 | 阶段 7 parser 字面量除法检查 |
 | `max_absolute_exponent` | 指数绝对值上限 | 1,000 | 阶段 7 parser 构造前检查 |
 | `max_function_arguments` | 单个函数最大参数数 | 8 | 阶段 7 parser 读取下一参数前检查 |
-| `max_scene_items` | 场景最大 item 数 | 16 | 后续阶段使用 |
-| `max_sample_points_per_item` | 单项最大采样点数 | 20,000 | 后续阶段使用 |
-| `max_total_sample_points` | 场景最大总采样点数 | 100,000 | 后续阶段使用 |
-| `max_branches_per_item` | 单项最大分支数 | 16 | 后续阶段使用 |
-| `max_total_branches` | 场景最大总分支数 | 64 | 后续阶段使用 |
-| `max_estimated_memory_bytes` | 预计内存上限 | 268,435,456 bytes | 后续阶段使用 |
-| `max_png_bytes` | 输出 PNG 字节上限 | 33,554,432 bytes | 后续阶段使用 |
-| `min_image_width` | 图片最小宽度 | 320 | 后续阶段使用 |
-| `max_image_width` | 图片最大宽度 | 4,096 | 后续阶段使用 |
-| `min_image_height` | 图片最小高度 | 240 | 后续阶段使用 |
-| `max_image_height` | 图片最大高度 | 4,096 | 后续阶段使用 |
-| `min_dpi` | DPI 最小值 | 72 | 后续阶段使用 |
-| `max_dpi` | DPI 最大值 | 300 | 后续阶段使用 |
+| `max_scene_items` | 场景最大 item 数 | 16 | 阶段 8C-1 Builder 的 Scene 资源审批 |
+| `max_sample_points_per_item` | 单项最大采样点数 | 20,000 | 阶段 8C-1 Builder 批准正式点数；8C-2 sampler 消费批准值 |
+| `max_total_sample_points` | 场景最大总采样点数 | 100,000 | 阶段 8C-1 Builder 的 Scene 正式点数审批 |
+| `max_branches_per_item` | 单项最大分支数 | 16 | 阶段 8C-1 批准 segment capacity；8C-2 sampler 执行容量 |
+| `max_total_branches` | 场景最大总分支数 | 64 | 阶段 8C-1 Builder 的 Scene 分支审批 |
+| `max_estimated_memory_bytes` | 预计内存上限 | 268,435,456 bytes | 阶段 8C-1 Builder 的正式内存预算上限 |
+| `max_png_bytes` | 输出 PNG 字节上限 | 33,554,432 bytes | 阶段 8C-1 memory budget 的 PNG reserve；实际 PNG 仍属后续 renderer |
+| `min_image_width` | 图片最小宽度 | 320 | 阶段 8C-1 Builder 输出验证与正式采样点规划 |
+| `max_image_width` | 图片最大宽度 | 4,096 | 阶段 8C-1 Builder 输出验证与正式采样点规划 |
+| `min_image_height` | 图片最小高度 | 240 | 阶段 8C-1 Builder 输出验证与 canvas 预算 |
+| `max_image_height` | 图片最大高度 | 4,096 | 阶段 8C-1 Builder 输出验证与 canvas 预算 |
+| `min_dpi` | DPI 最小值 | 72 | 阶段 8C-1 Builder 输出验证 |
+| `max_dpi` | DPI 最大值 | 300 | 阶段 8C-1 Builder 输出验证 |
 | `max_log_file_bytes` | 单个日志文件容量 | 5,242,880 bytes | 阶段 5 日志使用 |
 | `log_backup_count` | 日志轮转备份数量 | 3 | 阶段 5 日志使用 |
 | `max_log_field_text_length` | 日志字段文本最大长度 | 512 | 阶段 5 日志使用 |
@@ -347,6 +347,7 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 | `unsupported_equation` | 未形成直接显函数候选的方程形式当前不支持；不携带真实曲线类别判断 | 阶段 7 classifier |
 | `invalid_viewport` | 视口请求的边界、顺序、跨度或坐标范围无效 | 阶段 8B resolver |
 | `viewport_probe_budget_exceeded` | 自动视口探测的独立预分配预算不足或获批分配失败 | 阶段 8B resolver |
+| `no_visible_curve` | 采样成功但当前视口没有可绘制曲线；内部 typed reason 区分无有限点、无可绘制段和视口外 | 阶段 8C-2 sampler |
 <!-- ERROR_CODE_REGISTRY_END -->
 
 ## 阶段 8B 单显函数视口解析契约
@@ -433,9 +434,15 @@ segment 数。完整 final x 已单独计入，batch x 是它的 slice view，�
 
 普通 `RenderPlan(...)` 只能构造未审批快照。Builder 在所有 Scene、viewport、输出、点数、
 branches 和预算检查成功后才由 model-owned factory 签发 typed approval receipt。未来
-sampler 必须调用 `validate_approved_render_plan`；该校验会重查 receipt seal 与计划的版本、
-输出和预算关键字段，拒绝普通构造、旧计划或字段篡改。该模式是 Python 层的协议门禁，
-不声称密码学私有性。
+sampler 必须调用 `validate_approved_render_plan`。receipt 不保存可与计划同步变化的 Scene、
+Spec、viewport、item plan 或 memory budget 对象引用，而在签发时递归形成独立语义值快照：
+Scene item 数量/顺序/精确类型/item_id、validated expression 的受限 AST 节点类型、运算、
+字面量、children、source spans、source form、free variables 和 limits contract，viewport 四边界、
+aspect/source，输出尺寸、dpi、grid/legend，全部版本，item plan 全字段及每个 memory budget
+组成字段。验证时从当前计划重新形成同一 typed/value snapshot 与签发值比较，再复验
+validated-expression 私有 seal 等嵌套契约；因此对 frozen nested dataclass 使用
+`object.__setattr__` 的原位篡改也会被直接拒绝，失败不会重签 receipt。该模式仍只是 Python
+层 capability/integrity 门禁，不声称密码学安全。
 
 获批计划固定：`render-plan-v1-budgeted-explicit`、本次实际重验证所用
 `ApplicationLimits.version`、sampling policy version、
@@ -445,6 +452,148 @@ sampler 必须调用 `validate_approved_render_plan`；该校验会重查 receip
 
 阶段 8C-1 不创建正式 x/y 数组，不实现 sampler、分段、振荡诊断执行、Figure/Canvas、PNG
 renderer、Qt、Matplotlib、Actor 或 UI。
+
+## 阶段 8C-2 explicit sampler、分段与采样诊断
+
+唯一入口为：
+
+```text
+sample_explicit_function(
+    approved RenderPlan,
+    *,
+    cancellation_probe: CancellationProbe | None,
+) -> SampledExplicitFunction | SamplingCancelled | ErrorInfo
+```
+
+入口不再接收 Spec、ResolvedViewport、采样点数、batch、x/y 边界、AST、表达式对象、
+函数对象、原始文本或阶段 8B probe 数据。第一步固定调用
+`validate_approved_render_plan()`；随后只消费 receipt 已绑定的 Scene、viewport、item plan、
+输出标量、版本和完整 memory budget snapshot；正式点数、batch、segment capacity 与 executor
+liveness 直接读取 approved item plan。sampler 仍核对 active limits version、sampling policy
+version、executor contract version、单项精确 `ExplicitFunctionSpec` 及 Spec/viewport/item plan/
+memory budget 的基础 typed contract；这些是活动契约与运行时阈值检查，不是预算重算。sampler
+不按 image width/policy 重算点数或 segment capacity，不调用 cost estimator 或 Builder，不重推
+executor liveness、内存分解或 limits 预算总额，也不重新构造 RenderPlan 或签发第二种 receipt。
+无效或篡改计划由 approval 验证在 `np.linspace`、正式 y、validity mask 和 executor 前拒绝。
+
+### typed outcome 与数组所有权
+
+成功类型 `SampledExplicitFunction` 至少包含：
+
+```text
+item_id
+x / y
+segment_ranges
+finite_sample_count / nonfinite_sample_count
+isolated_finite_count / discontinuity_break_count
+visible_segment_count
+tuple[SamplingWarning, ...]
+SamplingDiagnostics
+```
+
+`SamplingCancelled` 是独立结果，不是 ErrorInfo、warning 或部分成功。成功返回前固定保证：
+
+```text
+x: float64, shape (N,), OWNDATA=True, WRITEABLE=False
+y: float64, shape (N,), OWNDATA=True, WRITEABLE=False
+segment_ranges: int64, shape (S,2), OWNDATA=True, WRITEABLE=False
+```
+
+NumPy 2.5.1 的 `linspace` 当前返回覆盖完整内部 owner 的 view；sampler 验证 shape、dtype、
+stride 和首地址一致后直接接管该任务私有 owner，不建立第二份完整 x。若未来 NumPy 行为不再
+能证明这一点，返回内部契约错误，不用未预算的完整复制补救。y 是独立正式缓冲；每批只把 x
+的 slice view 交给阶段 8A executor。正式 x owner 在首次跨组件暴露前即设为只读，因此每个
+batch view 也是 `WRITEABLE=False`；executor 即使保留 view，也不能在采样期间或成功返回后反向
+修改正式 x。sampler 立刻把 scalar/vector 结果写入 y 对应 slice，并释放 batch 输出引用。
+executor typed ErrorInfo 原样返回，sampler 不修复 dtype、shape、长度或所有权。
+
+### segment 与可见性
+
+任一端为 NaN、`+inf` 或 `-inf` 时相邻 pair 不连接。连续有限点使用归一化值：
+
+```text
+u = (y - y_min) / (y_max - y_min)
+```
+
+有限 pair 仅在以下条件全部成立时断开：
+
+1. 两端分别严格位于 y 视口下方和上方；
+2. `abs(Δu) > finite_jump_threshold`；默认批准值为 64；
+3. 半径为 `max(4, floor(sqrt(finite_jump_threshold)))`；默认半径为 8；
+4. 候选 pair 自身不进入局部基准；左侧只取 `i-radius ... i-1`，右侧只取
+   `i+1 ... i+radius`；每个局部 pair 两端都必须有限，且不得跨非有限边界；
+5. 左右必须**各自完整取得 radius 个**有限归一化差分；任一侧不足时不按本启发式断线；
+6. 左右分别计算 `abs(Δu)` 中位数，并分别与 `1 / image_height` 取较大值；再用两侧基准中
+   较大的一个作为保守局部基准；
+7. 候选 `abs(Δu)` 大于该基准的 `sqrt(finite_jump_threshold)` 倍；默认相对倍数为 8。
+
+这同时保留 absolute jump、局部 outlier 和至少一垂直像素的基准下限。单个很大值不触发
+断线；靠近数组/segment 边缘而缺少任一侧完整证据的有限 pair 也不断开。非有限点仍无条件
+断线。与附近斜率一致的陡峭线性、`x^3` 和 `exp(x)` 不断开；该启发式不声称识别任意函数的
+全部不连续点。segment 使用共享 x/y 的
+`[start, stop)` int64 ranges，每段至少两个点、有序且不重叠。孤立有限点不构成 segment。
+segment 数超过 plan 批准容量时返回 `resource_limit_exceeded`，不截断或合并。
+
+segment 可见，当且仅当至少有一个点位于闭区间 `[y_min,y_max]`，或一个未断开的有限 pair
+穿过任一 y 视口边界。统一可恢复错误 `no_visible_curve` 的内部 typed reason 为：
+
+| typed reason | 含义 |
+|---|---|
+| `NO_FINITE_SAMPLES` | 没有有限采样点 |
+| `NO_DRAWABLE_SEGMENT` | 有限点存在，但没有至少两点的可绘制 segment |
+| `OUTSIDE_VIEWPORT` | 有 segment，但没有点或连续 pair 与当前 y 视口相交 |
+
+### sampling warning 与密集振荡代理
+
+warning 只含稳定 code 和匹配的 typed metrics，不含自由文本周期声明：
+
+| warning code | typed metrics | 语义 |
+|---|---|---|
+| `partial_domain_omitted` | `finite_sample_count`、`nonfinite_sample_count` | 部分定义域有可绘制结果，非有限部分已省略 |
+| `dense_oscillation_suspected` | `significant_direction_change_count`、`valid_adjacent_pair_count`、`samples_per_monotone_run` | 受预算样本可能不足以表达密集振荡 |
+
+密集振荡代理在每个 segment 内读取一阶差分；绝对变化小于一个 y 输出像素
+`(y_max-y_min)/image_height` 时忽略。统计显著差分方向反转，`valid_adjacent_pair_count` 为
+segment 内全部连续有限 pair 数；`samples_per_monotone_run` 为 segment 样本总数除以
+`direction_changes + 有显著方向的 segment 数`。若没有显著方向，则退化为 segment 样本总数。
+
+默认批准 `dense_oscillation_proxy_threshold=32`，冻结判定派生为：
+
+```text
+minimum_direction_changes = max(1, threshold // 2) = 16
+maximum_samples_per_monotone_run = threshold * 2 = 64
+```
+
+两项同时满足才警告。冻结诊断使用 x=`[-10,10]`、image_width=800、正式 N=1600：
+
+| 公式 | significant direction changes | samples/monotone run | 期望 |
+|---|---:|---:|---|
+| `sin(x)` | 6 | 228.571 | 不警告 |
+| `x^2` | 1 | 800.000 | 不警告 |
+| `exp(x)` | 0 | 1600.000 | 不警告 |
+| `sin(1000*x)` | 30 | 51.613 | `dense_oscillation_suspected` |
+| `2+sin(1000*x)` | 30 | 51.613 | `dense_oscillation_suspected` |
+
+这些值只描述该冻结采样序列，不表示函数的精确周期数。
+
+### cancellation、异常与禁止依赖
+
+`CancellationProbe` 只定义 `is_cancelled() -> bool`，不导入 Qt。固定检查点为 approval 成功后且
+首次分配前、每批 executor 前、executor 返回后、分段/诊断每处理
+`cancellation_check_interval` 个点，以及冻结返回前。取消后不调用后续 batch，不返回半成品。
+
+已批准分配仍可能失败；正式 x、正式 y、validity mask、segment ranges 及其他 sampler 控制的
+实际 NumPy/局部结构分配发生 `MemoryError`（包括适用的 NumPy 内存异常子类）时，统一转为
+脱敏、可恢复 `resource_limit_exceeded`，不泄露 allocator 文本、公式、路径、repr 或堆栈，
+不继续后续阶段，也不返回部分数组。approval 语义快照的小型结构构造发生 MemoryError 时同样
+不会从 sampler 逸出。其他 sampler/executor/cancellation 程序员契约错误使用不可恢复
+`internal_error`。本模块不包含 Qt、Matplotlib、Figure/Canvas/PNG、SymPy、lambdify、原始文本
+或外部函数对象路径，也不实现 midpoint 探测、第二套 executor 调度、renderer、Actor 或阶段 9。
+
+阶段 8C-2 自动测试位于 `tests/engine/test_samplers.py`；覆盖未批准/篡改 plan 的分配前拒绝、
+正式 batch、标量、部分/空定义域、半开 segment、segment capacity、可见性、`1/x`、`tan(x)`、
+连续陡峭与边缘 `exp(x)` 反例、6000 点真实短尾 `[4096,1904]`、所有权、executor 返回后和
+诊断循环内取消、各正式分配失败、warning 正反例及禁止依赖。
 
 所有阶段 6、7 用户错误均返回中文 `user_message`、原始输入 `SourceSpan` 和 `recoverable=True`。`technical_message` 只包含脱敏类别、计数或 token kind，不包含完整原始公式、堆栈、本地路径，也不暴露内部规范化偏移。
 

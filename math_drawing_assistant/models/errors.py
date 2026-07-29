@@ -44,6 +44,7 @@ class ErrorCode(str, Enum):
     UNSUPPORTED_EQUATION = "unsupported_equation"
     INVALID_VIEWPORT = "invalid_viewport"
     VIEWPORT_PROBE_BUDGET_EXCEEDED = "viewport_probe_budget_exceeded"
+    NO_VISIBLE_CURVE = "no_visible_curve"
 
 
 class ViewportWarningCode(str, Enum):

@@ -13,6 +13,7 @@ from math_drawing_assistant.models.errors import (
     ViewportWarning,
     ViewportWarningCode,
 )
+from math_drawing_assistant.engine import SamplingWarningCode
 
 
 def test_existing_error_code_values_remain_stable() -> None:
@@ -22,6 +23,17 @@ def test_existing_error_code_values_remain_stable() -> None:
 
 def test_all_error_code_values_are_unique() -> None:
     values = [code.value for code in ErrorCode]
+    assert len(values) == len(set(values))
+
+
+def test_sampling_warning_code_values_are_unique_and_stable() -> None:
+    assert SamplingWarningCode.PARTIAL_DOMAIN_OMITTED.value == (
+        "partial_domain_omitted"
+    )
+    assert SamplingWarningCode.DENSE_OSCILLATION_SUSPECTED.value == (
+        "dense_oscillation_suspected"
+    )
+    values = [code.value for code in SamplingWarningCode]
     assert len(values) == len(set(values))
 
 

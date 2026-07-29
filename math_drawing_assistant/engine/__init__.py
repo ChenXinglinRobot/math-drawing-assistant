@@ -1,4 +1,4 @@
-"""Public input-front-end and stage 7 restricted-analysis contracts."""
+"""Public Engine contracts available through stage 8C-2."""
 
 from math_drawing_assistant.engine.equation_splitter import (
     EquationInput,
@@ -18,6 +18,19 @@ from math_drawing_assistant.engine.numeric_executor import (
 from math_drawing_assistant.engine.render_plan_builder import (
     RenderPlanBuilder,
     build_single_explicit_render_plan,
+)
+from math_drawing_assistant.engine.samplers import (
+    CancellationProbe,
+    DenseOscillationMetrics,
+    NoVisibleCurveReason,
+    PartialDomainMetrics,
+    SampledExplicitFunction,
+    SamplingCancelled,
+    SamplingDiagnostics,
+    SamplingOutcome,
+    SamplingWarning,
+    SamplingWarningCode,
+    sample_explicit_function,
 )
 from math_drawing_assistant.engine.parser import (
     ParseMetrics,
@@ -57,21 +70,31 @@ __all__ = [
     "APPROVED_CONSTANTS",
     "APPROVED_FUNCTIONS",
     "APPROVED_VARIABLES",
+    "CancellationProbe",
+    "DenseOscillationMetrics",
     "EquationInput",
     "ExplicitFunctionCandidate",
     "ExplicitValidation",
     "ExpressionInput",
     "Float64Vector",
     "NormalizedInput",
+    "NoVisibleCurveReason",
     "NUMERIC_EXECUTOR_CONTRACT_VERSION",
     "NumericExecutionCost",
     "NumericExecutionResult",
     "NumericValue",
     "ParseMetrics",
+    "PartialDomainMetrics",
     "ParsedEquationInput",
     "ParsedExpressionInput",
     "ParsedInput",
     "RenderPlanBuilder",
+    "SampledExplicitFunction",
+    "SamplingCancelled",
+    "SamplingDiagnostics",
+    "SamplingOutcome",
+    "SamplingWarning",
+    "SamplingWarningCode",
     "SourceMap",
     "Token",
     "TokenKind",
@@ -86,6 +109,7 @@ __all__ = [
     "execute_explicit_function",
     "parse_input",
     "resolve_single_explicit_viewport",
+    "sample_explicit_function",
     "split_equation",
     "tokenize",
     "validate_explicit_candidate",

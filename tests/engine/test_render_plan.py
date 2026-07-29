@@ -20,6 +20,8 @@ from math_drawing_assistant.models import render_plan as render_plan_model
 from math_drawing_assistant.models import (
     DEFAULT_EXPLICIT_SAMPLING_POLICY,
     AspectRequest,
+    BinaryOpNode,
+    BinaryOperator,
     ErrorCode,
     ErrorInfo,
     ExplicitSamplingPolicy,
@@ -221,7 +223,7 @@ def test_empty_multi_or_wrong_scene_is_rejected(scene_spec: object) -> None:
     if type(scene_spec) is PlotSceneSpec and not hasattr(scene_spec, "items"):
         object.__setattr__(scene_spec, "items", ())
     error = _error(scene_spec=scene_spec)
-    assert error.code in {ErrorCode.INVALID_REQUEST, ErrorCode.INTERNAL_ERROR}
+    assert error.code is ErrorCode.INVALID_REQUEST
 
 
 @pytest.mark.parametrize(
@@ -313,6 +315,170 @@ def test_plan_tampering_or_forged_receipt_is_rejected() -> None:
     object.__setattr__(forged, "_approval_receipt", fake_receipt)
     with pytest.raises(ValueError, match="receipt is invalid"):
         validate_approved_render_plan(forged)
+
+
+def test_approval_receipt_uses_independent_nested_value_snapshots() -> None:
+    plan = _success(scene_spec=_scene("x+1"))
+    receipt = plan._approval_receipt
+    assert receipt is not None
+    snapshot = receipt.approved_snapshot
+
+    assert snapshot.scene_items is not plan.scene_spec.items
+    assert snapshot.scene_items[0] is not plan.scene_spec.items[0]
+    assert snapshot.resolved_viewport is not plan.resolved_viewport
+    assert snapshot.item_plan is not plan.item_plan
+    assert snapshot.memory_budget is not plan.memory_budget
+    assert validate_approved_render_plan(plan) is plan
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "sample_count",
+        "batch_size",
+        "max_segment_count",
+        "max_live_float64_vectors",
+    ],
+)
+def test_approval_snapshot_rejects_in_place_item_plan_tampering(
+    field_name: str,
+) -> None:
+    plan = _success()
+    assert plan.item_plan is not None
+    object.__setattr__(
+        plan.item_plan,
+        field_name,
+        getattr(plan.item_plan, field_name) + 1,
+    )
+
+    with pytest.raises(ValueError, match="do not match"):
+        validate_approved_render_plan(plan)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "final_x_bytes",
+        "final_y_bytes",
+        "validity_mask_bytes",
+        "segment_index_range_bytes",
+        "executor_extra_batch_bytes",
+        "rgba_canvas_bytes",
+        "png_buffer_reserve_bytes",
+    ],
+)
+def test_approval_snapshot_rejects_in_place_memory_component_tampering(
+    field_name: str,
+) -> None:
+    plan = _success()
+    assert plan.memory_budget is not None
+    object.__setattr__(
+        plan.memory_budget,
+        field_name,
+        getattr(plan.memory_budget, field_name) + 1,
+    )
+
+    with pytest.raises(ValueError, match="do not match"):
+        validate_approved_render_plan(plan)
+
+
+def test_approval_snapshot_rejects_in_place_viewport_and_ast_semantic_tampering() -> None:
+    viewport_plan = _success()
+    object.__setattr__(viewport_plan.resolved_viewport, "x_min", -9.0)
+    with pytest.raises(ValueError, match="do not match"):
+        validate_approved_render_plan(viewport_plan)
+
+    expression_plan = _success(scene_spec=_scene("x+1"))
+    expression = expression_plan.scene_spec.items[0].expression
+    assert type(expression) is BinaryOpNode
+    object.__setattr__(expression, "operator", BinaryOperator.SUBTRACT)
+    with pytest.raises(ValueError, match="do not match"):
+        validate_approved_render_plan(expression_plan)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "message"),
+    [
+        ("plan_version", "contract version is not active"),
+        ("limits_version", "do not match"),
+        ("sampling_policy_version", "do not match"),
+        ("numeric_executor_contract_version", "do not match"),
+    ],
+)
+def test_approval_snapshot_rejects_version_tampering_without_reissuing(
+    field_name: str,
+    message: str,
+) -> None:
+    plan = _success()
+    receipt = plan._approval_receipt
+    object.__setattr__(plan, field_name, "tampered-version")
+
+    with pytest.raises(ValueError, match=message):
+        validate_approved_render_plan(plan)
+    assert plan._approval_receipt is receipt
+
+
+def test_approval_snapshot_rejects_ast_span_tampering() -> None:
+    plan = _success(scene_spec=_scene("x+1"))
+    expression = plan.scene_spec.items[0].expression
+    assert type(expression) is BinaryOpNode
+    span = expression.left.normalized_span
+    object.__setattr__(span, "start", span.start + 1)
+
+    with pytest.raises(ValueError, match="do not match"):
+        validate_approved_render_plan(plan)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "tampered_value"),
+    [
+        ("normalized_input", "x-1"),
+        ("source_form", "y_equals"),
+        ("free_variables", ()),
+    ],
+)
+def test_approval_snapshot_rejects_validated_metadata_tampering(
+    field_name: str,
+    tampered_value: object,
+) -> None:
+    plan = _success(scene_spec=_scene("x+1"))
+    validated = plan.scene_spec.items[0].validated_expression
+    object.__setattr__(validated, field_name, tampered_value)
+
+    with pytest.raises(ValueError, match="do not match"):
+        validate_approved_render_plan(plan)
+
+
+def test_approval_validation_rechecks_validated_contract_seal() -> None:
+    plan = _success()
+    contract = plan.scene_spec.items[0].validated_expression._contract
+    object.__setattr__(contract, "_seal", object())
+
+    with pytest.raises(TypeError, match="issued internally"):
+        validate_approved_render_plan(plan)
+
+
+def test_approval_rejects_receipt_snapshot_metadata_tampering_without_reissue() -> None:
+    plan = _success()
+    receipt = plan._approval_receipt
+    assert receipt is not None
+    snapshot = receipt.approved_snapshot
+    object.__setattr__(snapshot, "dpi", snapshot.dpi + 1)
+
+    with pytest.raises(ValueError, match="do not match"):
+        validate_approved_render_plan(plan)
+    assert plan._approval_receipt is receipt
+
+
+def test_approval_receipt_seal_tampering_is_rejected_without_reissuing() -> None:
+    plan = _success()
+    receipt = plan._approval_receipt
+    assert receipt is not None
+    object.__setattr__(receipt, "_seal", object())
+
+    with pytest.raises(ValueError, match="receipt is invalid"):
+        validate_approved_render_plan(plan)
+    assert plan._approval_receipt is receipt
 
 
 def test_approval_snapshot_rejects_viewport_replacements() -> None:
