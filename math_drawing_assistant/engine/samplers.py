@@ -7,7 +7,7 @@ parallel inputs.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from math import isfinite, sqrt
 from statistics import median
@@ -30,6 +30,8 @@ from math_drawing_assistant.models.render_plan import (
     ExplicitSamplingPolicy,
     RenderMemoryBudget,
     RenderPlan,
+    _RenderPlanApprovalSnapshot,
+    _snapshot_approved_render_plan,
     validate_approved_render_plan,
 )
 from math_drawing_assistant.models.viewport import ResolvedViewport
@@ -169,6 +171,12 @@ class SampledExplicitFunction:
     visible_segment_count: int
     warnings: tuple[SamplingWarning, ...]
     diagnostics: SamplingDiagnostics
+    _plan_contract_snapshot: _RenderPlanApprovalSnapshot | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         _item_id(self.item_id)
@@ -210,6 +218,21 @@ class SampledExplicitFunction:
 
 
 SamplingOutcome: TypeAlias = SampledExplicitFunction | SamplingCancelled | ErrorInfo
+
+
+def _sampled_explicit_function_matches_approved_plan(
+    value: object,
+    plan: object,
+) -> bool:
+    """Compare a sampled contract with the sole snapshot of a current approved plan."""
+
+    if type(value) is not SampledExplicitFunction:
+        return False
+    snapshot = value._plan_contract_snapshot
+    return (
+        type(snapshot) is _RenderPlanApprovalSnapshot
+        and snapshot == _snapshot_approved_render_plan(plan)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,7 +473,7 @@ def _sample_approved_explicit_function(
     y.setflags(write=False)
     segment_ranges.setflags(write=False)
     try:
-        return SampledExplicitFunction(
+        sampled = SampledExplicitFunction(
             item_id=context.spec.item_id,
             x=x,
             y=y,
@@ -466,6 +489,12 @@ def _sample_approved_explicit_function(
             warnings=tuple(warnings),
             diagnostics=diagnostics,
         )
+        object.__setattr__(
+            sampled,
+            "_plan_contract_snapshot",
+            _snapshot_approved_render_plan(context.plan),
+        )
+        return sampled
     except (AttributeError, TypeError, ValueError):
         return _contract_error(context.spec.item_id, "frozen sampling result contract failed")
 

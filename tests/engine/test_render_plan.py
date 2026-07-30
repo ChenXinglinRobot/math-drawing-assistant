@@ -144,6 +144,7 @@ def test_budget_components_follow_the_published_scalar_formula() -> None:
 
     assert budget.final_x_bytes == item.sample_count * 8
     assert budget.final_y_bytes == item.sample_count * 8
+    assert budget.artist_data_bytes == budget.final_x_bytes + budget.final_y_bytes
     assert budget.validity_mask_bytes == item.sample_count
     assert budget.segment_index_range_bytes == item.max_segment_count * 2 * 8
     assert budget.executor_extra_batch_bytes == (
@@ -151,7 +152,29 @@ def test_budget_components_follow_the_published_scalar_formula() -> None:
     )
     assert budget.rgba_canvas_bytes == plan.image_width * plan.image_height * 4
     assert budget.png_buffer_reserve_bytes == DEFAULT_LIMITS.max_png_bytes
+    assert budget.png_copy_bytes == DEFAULT_LIMITS.max_png_bytes
+    assert budget.fixed_bytes == (
+        budget.final_x_bytes
+        + budget.final_y_bytes
+        + budget.artist_data_bytes
+        + budget.validity_mask_bytes
+        + budget.segment_index_range_bytes
+        + budget.rgba_canvas_bytes
+        + budget.png_buffer_reserve_bytes
+        + budget.png_copy_bytes
+    )
     assert budget.total_bytes == budget.fixed_bytes + budget.executor_extra_batch_bytes
+
+
+def test_budget_component_relationships_are_value_invariants() -> None:
+    plan = _success()
+    assert plan.memory_budget is not None
+    budget = plan.memory_budget
+
+    with pytest.raises(ValueError, match="artist_data_bytes"):
+        replace(budget, artist_data_bytes=budget.artist_data_bytes + 1)
+    with pytest.raises(ValueError, match="png_copy_bytes"):
+        replace(budget, png_copy_bytes=budget.png_copy_bytes + 1)
 
 
 def test_sample_count_changes_with_width_and_obeys_policy() -> None:
@@ -201,6 +224,34 @@ def test_batch_is_shrunk_from_preference_then_minimum_failure_is_resource_error(
     assert failure.code is ErrorCode.RESOURCE_LIMIT_EXCEEDED
     assert failure.recoverable is True
     assert failure.field_name == "max_estimated_memory_bytes"
+
+
+def test_artist_and_png_copy_peak_are_in_the_pre_sampling_memory_gate() -> None:
+    baseline = _success()
+    assert baseline.memory_budget is not None
+    budget = baseline.memory_budget
+    legacy_fixed_bytes = (
+        budget.fixed_bytes - budget.artist_data_bytes - budget.png_copy_bytes
+    )
+    assert legacy_fixed_bytes < budget.fixed_bytes
+    tight_limits = replace(
+        DEFAULT_LIMITS,
+        max_estimated_memory_bytes=legacy_fixed_bytes,
+    )
+
+    result = RenderPlanBuilder(limits=tight_limits).build(
+        _scene(),
+        _viewport(),
+        image_width=800,
+        image_height=600,
+        dpi=96,
+        show_grid=True,
+        show_legend=True,
+    )
+
+    assert isinstance(result, ErrorInfo)
+    assert result.code is ErrorCode.RESOURCE_LIMIT_EXCEEDED
+    assert result.field_name == "max_estimated_memory_bytes"
 
 
 def test_liveness_one_has_no_executor_extra_batch_budget() -> None:
@@ -360,11 +411,13 @@ def test_approval_snapshot_rejects_in_place_item_plan_tampering(
     [
         "final_x_bytes",
         "final_y_bytes",
+        "artist_data_bytes",
         "validity_mask_bytes",
         "segment_index_range_bytes",
         "executor_extra_batch_bytes",
         "rgba_canvas_bytes",
         "png_buffer_reserve_bytes",
+        "png_copy_bytes",
     ],
 )
 def test_approval_snapshot_rejects_in_place_memory_component_tampering(
@@ -518,7 +571,8 @@ def test_approval_snapshot_rejects_budget_component_tampering() -> None:
     altered_budget = replace(
         plan.memory_budget,
         final_x_bytes=plan.memory_budget.final_x_bytes - 8,
-        executor_extra_batch_bytes=plan.memory_budget.executor_extra_batch_bytes + 8,
+        artist_data_bytes=plan.memory_budget.artist_data_bytes - 8,
+        executor_extra_batch_bytes=plan.memory_budget.executor_extra_batch_bytes + 16,
     )
     assert altered_budget.total_bytes == plan.memory_budget.total_bytes
     object.__setattr__(plan, "memory_budget", altered_budget)

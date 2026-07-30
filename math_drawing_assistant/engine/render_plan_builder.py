@@ -364,6 +364,7 @@ def _plan_memory_and_batch(
     fixed_budget = RenderMemoryBudget(
         final_x_bytes=sample_count * _FLOAT64_BYTES,
         final_y_bytes=sample_count * _FLOAT64_BYTES,
+        artist_data_bytes=sample_count * _FLOAT64_BYTES * 2,
         validity_mask_bytes=sample_count,
         segment_index_range_bytes=(
             max_segment_count * _SEGMENT_INDEX_RANGE_BYTES
@@ -371,6 +372,7 @@ def _plan_memory_and_batch(
         executor_extra_batch_bytes=0,
         rgba_canvas_bytes=image_width * image_height * _RGBA_BYTES_PER_PIXEL,
         png_buffer_reserve_bytes=limits.max_png_bytes,
+        png_copy_bytes=limits.max_png_bytes,
     )
     remaining_bytes = limits.max_estimated_memory_bytes - fixed_budget.fixed_bytes
     if remaining_bytes < 0:
@@ -412,11 +414,13 @@ def _plan_memory_and_batch(
     memory_budget = RenderMemoryBudget(
         final_x_bytes=fixed_budget.final_x_bytes,
         final_y_bytes=fixed_budget.final_y_bytes,
+        artist_data_bytes=fixed_budget.artist_data_bytes,
         validity_mask_bytes=fixed_budget.validity_mask_bytes,
         segment_index_range_bytes=fixed_budget.segment_index_range_bytes,
         executor_extra_batch_bytes=(bytes_per_batch_point * batch_size),
         rgba_canvas_bytes=fixed_budget.rgba_canvas_bytes,
         png_buffer_reserve_bytes=fixed_budget.png_buffer_reserve_bytes,
+        png_copy_bytes=fixed_budget.png_copy_bytes,
     )
     return (item_plan, memory_budget)
 

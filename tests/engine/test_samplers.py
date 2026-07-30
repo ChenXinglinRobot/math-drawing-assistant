@@ -91,6 +91,24 @@ def _sample(*args: object, **kwargs: object) -> SampledExplicitFunction:
     return outcome
 
 
+def _ordinary_sampled_copy(
+    sampled: SampledExplicitFunction,
+) -> SampledExplicitFunction:
+    return SampledExplicitFunction(
+        item_id=sampled.item_id,
+        x=sampled.x,
+        y=sampled.y,
+        segment_ranges=sampled.segment_ranges,
+        finite_sample_count=sampled.finite_sample_count,
+        nonfinite_sample_count=sampled.nonfinite_sample_count,
+        isolated_finite_count=sampled.isolated_finite_count,
+        discontinuity_break_count=sampled.discontinuity_break_count,
+        visible_segment_count=sampled.visible_segment_count,
+        warnings=sampled.warnings,
+        diagnostics=sampled.diagnostics,
+    )
+
+
 def _vector_result(plan: RenderPlan, values: np.ndarray) -> NumericExecutionResult:
     assert plan.item_plan is not None
     values = np.array(values, dtype=np.float64, copy=True)
@@ -162,6 +180,112 @@ def test_sampler_api_consumes_only_plan_and_optional_cancellation_probe() -> Non
     signature = inspect.signature(sample_explicit_function)
     assert tuple(signature.parameters) == ("plan", "cancellation_probe")
     assert signature.parameters["cancellation_probe"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_formal_success_has_an_exact_plan_contract_but_ordinary_construction_does_not() -> None:
+    plan = _plan("x^2")
+    sampled = _sample(plan)
+    ordinary = _ordinary_sampled_copy(sampled)
+
+    assert samplers._sampled_explicit_function_matches_approved_plan(sampled, plan)
+    assert sampled._plan_contract_snapshot is not None
+    assert ordinary._plan_contract_snapshot is None
+    assert not samplers._sampled_explicit_function_matches_approved_plan(
+        ordinary,
+        plan,
+    )
+    assert not hasattr(sampled, "__dict__")
+
+
+def test_sampled_contract_is_not_a_public_constructor_parameter() -> None:
+    signature = inspect.signature(SampledExplicitFunction)
+    assert tuple(signature.parameters) == (
+        "item_id",
+        "x",
+        "y",
+        "segment_ranges",
+        "finite_sample_count",
+        "nonfinite_sample_count",
+        "isolated_finite_count",
+        "discontinuity_break_count",
+        "visible_segment_count",
+        "warnings",
+        "diagnostics",
+    )
+    contract_field = next(
+        field
+        for field in fields(SampledExplicitFunction)
+        if field.name == "_plan_contract_snapshot"
+    )
+    assert contract_field.init is False
+
+
+def test_sampled_contract_distinguishes_viewport_scene_and_memory_budget() -> None:
+    plan = _plan("x")
+    sampled = _sample(plan)
+    different_viewport = _plan("x", x_bounds=(-9, 10))
+    different_scene = _plan("x^2")
+    different_memory = _plan("x", image_height=241)
+
+    assert plan.item_plan is not None
+    assert different_viewport.item_plan is not None
+    assert different_scene.item_plan is not None
+    assert different_memory.item_plan is not None
+    assert {
+        plan.item_plan.sample_count,
+        different_viewport.item_plan.sample_count,
+        different_scene.item_plan.sample_count,
+        different_memory.item_plan.sample_count,
+    } == {640}
+    assert {
+        plan.item_plan.item_id,
+        different_viewport.item_plan.item_id,
+        different_scene.item_plan.item_id,
+        different_memory.item_plan.item_id,
+    } == {"sample-item"}
+    assert plan.memory_budget != different_memory.memory_budget
+    for other_plan in (different_viewport, different_scene, different_memory):
+        assert not samplers._sampled_explicit_function_matches_approved_plan(
+            sampled,
+            other_plan,
+        )
+
+
+def test_sampled_contract_binds_version_and_every_memory_component() -> None:
+    plan = _plan()
+    sampled = _sample(plan)
+    stored_snapshot = sampled._plan_contract_snapshot
+    assert type(stored_snapshot) is render_plan_model._RenderPlanApprovalSnapshot
+
+    version_tampered = _plan()
+    object.__setattr__(
+        version_tampered,
+        "sampling_policy_version",
+        "different-policy-version",
+    )
+    assert stored_snapshot != render_plan_model._approval_snapshot_from_plan(
+        version_tampered,
+    )
+
+    budget_tampered = _plan()
+    assert budget_tampered.memory_budget is not None
+    object.__setattr__(
+        budget_tampered.memory_budget,
+        "artist_data_bytes",
+        budget_tampered.memory_budget.artist_data_bytes + 1,
+    )
+    assert stored_snapshot != render_plan_model._approval_snapshot_from_plan(
+        budget_tampered,
+    )
+
+
+def test_sampler_reuses_the_model_snapshot_instead_of_copying_its_field_list() -> None:
+    source = Path(samplers.__file__).read_text(encoding="utf-8")
+
+    assert "_snapshot_approved_render_plan(" in source
+    assert "_RenderPlanApprovalSnapshot(" not in source
+    assert "_RenderMemoryBudgetSnapshot(" not in source
+    assert "_ResolvedViewportSnapshot(" not in source
 
 
 def test_unapproved_plan_is_rejected_before_allocation_or_execution(
@@ -646,8 +770,10 @@ def test_plan_and_viewport_snapshots_are_not_modified() -> None:
 
 
 def test_returned_arrays_are_float64_or_int64_owned_and_read_only() -> None:
-    sampled = _sample(_plan("x^2"))
+    plan = _plan("x^2")
+    sampled = _sample(plan)
 
+    assert samplers._sampled_explicit_function_matches_approved_plan(sampled, plan)
     for vector in (sampled.x, sampled.y):
         assert vector.dtype == np.dtype(np.float64)
         assert vector.shape == (sampled.x.shape[0],)
@@ -803,6 +929,19 @@ def test_cancellation_after_approval_precedes_first_allocation(
         cancellation_probe=_CancelOnCall(1),
     )
     assert isinstance(outcome, SamplingCancelled)
+
+
+def test_error_and_cancellation_outcomes_do_not_carry_success_contracts() -> None:
+    error = sample_explicit_function(_plan("1/0"))
+    cancelled = sample_explicit_function(
+        _plan(),
+        cancellation_probe=_CancelOnCall(1),
+    )
+
+    assert isinstance(error, ErrorInfo)
+    assert isinstance(cancelled, SamplingCancelled)
+    assert not hasattr(error, "_plan_contract_snapshot")
+    assert not hasattr(cancelled, "_plan_contract_snapshot")
 
 
 def test_allocation_memory_error_is_sanitized_resource_failure(

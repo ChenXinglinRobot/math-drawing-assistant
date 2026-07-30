@@ -19,6 +19,11 @@ from math_drawing_assistant.engine.render_plan_builder import (
     RenderPlanBuilder,
     build_single_explicit_render_plan,
 )
+from math_drawing_assistant.engine.renderer import (
+    RenderCancelled,
+    RenderOutcome,
+    render_explicit_png,
+)
 from math_drawing_assistant.engine.samplers import (
     CancellationProbe,
     DenseOscillationMetrics,
@@ -89,6 +94,8 @@ __all__ = [
     "ParsedExpressionInput",
     "ParsedInput",
     "RenderPlanBuilder",
+    "RenderCancelled",
+    "RenderOutcome",
     "SampledExplicitFunction",
     "SamplingCancelled",
     "SamplingDiagnostics",
@@ -109,6 +116,7 @@ __all__ = [
     "execute_explicit_function",
     "parse_input",
     "resolve_single_explicit_viewport",
+    "render_explicit_png",
     "sample_explicit_function",
     "split_equation",
     "tokenize",

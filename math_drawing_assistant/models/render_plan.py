@@ -116,27 +116,35 @@ class RenderMemoryBudget:
 
     final_x_bytes: int
     final_y_bytes: int
+    artist_data_bytes: int
     validity_mask_bytes: int
     segment_index_range_bytes: int
     executor_extra_batch_bytes: int
     rgba_canvas_bytes: int
     png_buffer_reserve_bytes: int
+    png_copy_bytes: int
 
     def __post_init__(self) -> None:
         for name in (
             "final_x_bytes",
             "final_y_bytes",
+            "artist_data_bytes",
             "validity_mask_bytes",
             "segment_index_range_bytes",
             "executor_extra_batch_bytes",
             "rgba_canvas_bytes",
             "png_buffer_reserve_bytes",
+            "png_copy_bytes",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise TypeError(f"{name} must be an integer.")
             if value < 0:
                 raise ValueError(f"{name} must not be negative.")
+        if self.artist_data_bytes != self.final_x_bytes + self.final_y_bytes:
+            raise ValueError("artist_data_bytes must equal final x plus final y bytes.")
+        if self.png_copy_bytes != self.png_buffer_reserve_bytes:
+            raise ValueError("png_copy_bytes must equal the PNG buffer reserve.")
 
     @property
     def fixed_bytes(self) -> int:
@@ -145,10 +153,12 @@ class RenderMemoryBudget:
         return (
             self.final_x_bytes
             + self.final_y_bytes
+            + self.artist_data_bytes
             + self.validity_mask_bytes
             + self.segment_index_range_bytes
             + self.rgba_canvas_bytes
             + self.png_buffer_reserve_bytes
+            + self.png_copy_bytes
         )
 
     @property
@@ -227,11 +237,13 @@ class _RenderMemoryBudgetSnapshot:
 
     final_x_bytes: int
     final_y_bytes: int
+    artist_data_bytes: int
     validity_mask_bytes: int
     segment_index_range_bytes: int
     executor_extra_batch_bytes: int
     rgba_canvas_bytes: int
     png_buffer_reserve_bytes: int
+    png_copy_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,11 +384,13 @@ def _approval_snapshot_from_plan(plan: RenderPlan) -> _RenderPlanApprovalSnapsho
         memory_budget=_RenderMemoryBudgetSnapshot(
             final_x_bytes=memory_budget.final_x_bytes,
             final_y_bytes=memory_budget.final_y_bytes,
+            artist_data_bytes=memory_budget.artist_data_bytes,
             validity_mask_bytes=memory_budget.validity_mask_bytes,
             segment_index_range_bytes=memory_budget.segment_index_range_bytes,
             executor_extra_batch_bytes=memory_budget.executor_extra_batch_bytes,
             rgba_canvas_bytes=memory_budget.rgba_canvas_bytes,
             png_buffer_reserve_bytes=memory_budget.png_buffer_reserve_bytes,
+            png_copy_bytes=memory_budget.png_copy_bytes,
         ),
     )
 
@@ -518,6 +532,12 @@ def validate_approved_render_plan(value: object) -> RenderPlan:
             raise
         raise ValueError("render plan approval receipt is invalid.") from exc
     return value
+
+
+def _snapshot_approved_render_plan(value: object) -> _RenderPlanApprovalSnapshot:
+    """Return the sole semantic snapshot only after approval validation succeeds."""
+
+    return _approval_snapshot_from_plan(validate_approved_render_plan(value))
 
 
 __all__ = [

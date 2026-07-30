@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
-文档版本：stage-8c2-explicit-sampler-v1-worktree
-状态：阶段 7、8A、8B、8C-1 已通过；阶段 8C-2 的 explicit sampler、分段、可见性、取消与采样诊断已在当前工作树实现并等待独立验收。本文不声明阶段 9 已开始或实现。
+文档版本：stage-9a-renderer-prerequisites-v1-worktree
+状态：阶段 7、8A、8B、8C-1 已通过；阶段 8C-2 的 explicit sampler、分段、可见性、取消与采样诊断已实现。阶段 9A 仅在当前工作树加固 sampled provenance 与 renderer 前置峰值预算，不实现 renderer，也未进入阶段 9B。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
@@ -418,19 +418,25 @@ Builder 在任何采样数组、`np.linspace` 或执行器调用之前，只用 
 ```text
 N*8                         final x
 N*8                         final y
+(N*8)+(N*8)                 Line/Artist drawing data
 N*1                         finite/validity mask
 S*2*8                       segment index ranges
 max(L-1, 0)*B*8             executor extra batch peak
 W*H*4                       one RGBA canvas
-max_png_bytes               PNG output reserve
+max_png_bytes               BytesIO PNG buffer reserve
+max_png_bytes               final immutable PNG bytes copy
 ```
 
 其中 `N` 为正式点数、`B` 为 batch、`L` 为 stage 8A
 `NumericExecutionCost.max_live_float64_vectors`、`S` 为已受硬 branches 上限约束的
 segment 数。完整 final x 已单独计入，batch x 是它的 slice view，因此执行器额外项使用
 `L-1`，不重复计数。Builder 先计算与 batch 无关的固定项，再从剩余内存反推不大于首选值
-的 batch；最小 batch 仍无法容纳时返回可恢复的 `resource_limit_exceeded`。这只是项目
-控制的大缓冲上界，不是对 Python、NumPy 或未来 Matplotlib RSS 的精确预测。
+的 batch；最小 batch 仍无法容纳时返回可恢复的 `resource_limit_exceeded`。
+`artist_data_bytes = final_x_bytes + final_y_bytes`，覆盖 Matplotlib Line/Artist 在 PNG
+编码完成前可能继续持有的一份绘图数据；`png_copy_bytes = max_png_bytes`，覆盖从
+`BytesIO` 形成最终不可变 `bytes` 时 PNG 缓冲与最终副本可能同时存在。当前预算覆盖项目
+可明确控制的正式数组、Artist 数据、RGBA canvas、`BytesIO` PNG reserve 和最终 PNG
+bytes copy；Matplotlib/Pillow 内部不可观测的临时分配仍属于库实现风险，不在此上界承诺内。
 
 普通 `RenderPlan(...)` 只能构造未审批快照。Builder 在所有 Scene、viewport、输出、点数、
 branches 和预算检查成功后才由 model-owned factory 签发 typed approval receipt。未来
@@ -489,6 +495,7 @@ isolated_finite_count / discontinuity_break_count
 visible_segment_count
 tuple[SamplingWarning, ...]
 SamplingDiagnostics
+internal exact-approved-plan snapshot contract
 ```
 
 `SamplingCancelled` 是独立结果，不是 ErrorInfo、warning 或部分成功。成功返回前固定保证：
@@ -498,6 +505,15 @@ x: float64, shape (N,), OWNDATA=True, WRITEABLE=False
 y: float64, shape (N,), OWNDATA=True, WRITEABLE=False
 segment_ranges: int64, shape (S,2), OWNDATA=True, WRITEABLE=False
 ```
+
+普通 `SampledExplicitFunction(...)` 构造仍可用于模型测试，但其 internal plan contract
+固定为空，也不公开接受调用者传入 snapshot/fingerprint。正式 sampler 只有在入口
+`validate_approved_render_plan()` 成功并完成全部采样检查后，才通过 model-owned
+`_snapshot_approved_render_plan()` 保存与 approval receipt 唯一构造逻辑同源的完整 typed
+semantic snapshot。阶段 9B 可通过受控私有 helper 比较 sampled outcome 保存值与当前 approved
+plan 的重新快照，不需要读取 receipt 字段或 seal。viewport、Scene AST/metadata、全部版本、
+item plan 和完整 memory budget 的任一语义差异都会使比较失败；`item_id`、样本数或数组 shape
+相同不能替代该契约。
 
 NumPy 2.5.1 的 `linspace` 当前返回覆盖完整内部 owner 的 view；sampler 验证 shape、dtype、
 stride 和首地址一致后直接接管该任务私有 owner，不建立第二份完整 x。若未来 NumPy 行为不再
@@ -590,7 +606,7 @@ image_width、image_height 和正式采样点数 N：
 不继续后续阶段，也不返回部分数组。approval 语义快照的小型结构构造发生 MemoryError 时同样
 不会从 sampler 逸出。其他 sampler/executor/cancellation 程序员契约错误使用不可恢复
 `internal_error`。本模块不包含 Qt、Matplotlib、Figure/Canvas/PNG、SymPy、lambdify、原始文本
-或外部函数对象路径，也不实现 midpoint 探测、第二套 executor 调度、renderer、Actor 或阶段 9。
+或外部函数对象路径，也不实现 midpoint 探测、第二套 executor 调度、renderer、Actor 或阶段 9B。
 
 阶段 8C-2 自动测试位于 `tests/engine/test_samplers.py`；覆盖未批准/篡改 plan 的分配前拒绝、
 正式 batch、标量、部分/空定义域、半开 segment、segment capacity、可见性、`1/x`、`tan(x)`、
