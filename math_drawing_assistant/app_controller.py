@@ -1,22 +1,32 @@
-"""Stage-2 coordination for immutable scene requests and render results."""
+"""Coordination for immutable scene requests and render results."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Iterable
 
-from math_drawing_assistant.models.errors import ErrorInfo
+from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo
 from math_drawing_assistant.models.requests import PlotItemRequest, PlotSceneRequest
 from math_drawing_assistant.models.results import PlotSceneResult
 from math_drawing_assistant.models.state import TaskPhase
 from math_drawing_assistant.models.viewport import ViewportRequest
+from math_drawing_assistant.workers.cancellation import (
+    CancellationToken,
+    RenderSubmitter,
+)
+
+_RENDER_SUBMISSION_NOTICE = "Unable to start rendering."
+_RENDER_SUBMISSION_FAILURE = "The render request could not be submitted."
+_RENDER_SHUTDOWN_NOTICE = "Unable to shut down the render service."
 
 
 class AppController:
     """Coordinate one foreground task without parsing or rendering anything."""
 
-    def __init__(self) -> None:
+    def __init__(self, render_submitter: RenderSubmitter | None = None) -> None:
+        self._render_submitter = render_submitter
         self._next_request_id = 1
+        self._current_render_token: CancellationToken | None = None
         self.current_scene_revision = 0
         self.current_render_request_id: int | None = None
         self.current_recognition_request_id: int | None = None
@@ -77,13 +87,17 @@ class AppController:
         show_legend: bool,
         created_at: datetime | None = None,
     ) -> PlotSceneRequest:
-        """Create and register the one permitted foreground render request."""
+        """Create, submit, and commit one foreground render request."""
 
-        self._require_idle_for_new_task()
+        self._require_render_submission_phase()
 
+        previous_request_id = self.current_render_request_id
+        previous_token = self._current_render_token
+        previous_phase = self.task_phase
+        next_request_id = self._next_request_id
         item_snapshot = tuple(items)
         request = PlotSceneRequest(
-            request_id=self._next_request_id,
+            request_id=next_request_id,
             scene_revision=self.current_scene_revision,
             items=item_snapshot,
             viewport=viewport,
@@ -96,10 +110,30 @@ class AppController:
                 datetime.now(timezone.utc) if created_at is None else created_at
             ),
         )
+        token = CancellationToken()
 
-        self._next_request_id += 1
+        if self._render_submitter is not None:
+            try:
+                accepted = self._render_submitter.submit(request, token)
+            except Exception:
+                token.cancel()
+                accepted = False
+            if accepted is not True:
+                self._restore_render_transaction(
+                    request_id=previous_request_id,
+                    token=previous_token,
+                    phase=previous_phase,
+                    next_request_id=next_request_id,
+                )
+                self._record_render_submission_failure()
+                raise RuntimeError(_RENDER_SUBMISSION_FAILURE) from None
+
+        self._next_request_id = next_request_id + 1
         self.current_render_request_id = request.request_id
+        self._current_render_token = token
         self.task_phase = TaskPhase.RENDERING
+        if previous_token is not None:
+            previous_token.cancel()
         return request
 
     def start_render(
@@ -141,6 +175,7 @@ class AppController:
             return False
 
         self.current_render_request_id = None
+        self._current_render_token = None
         self.task_phase = TaskPhase.IDLE
 
         if result.scene_revision != self.current_scene_revision:
@@ -165,22 +200,68 @@ class AppController:
         if self.task_phase in (TaskPhase.IDLE, TaskPhase.SHUTTING_DOWN):
             return False
 
+        if self._current_render_token is not None:
+            self._current_render_token.cancel()
+        self._current_render_token = None
         self.current_render_request_id = None
         self.current_recognition_request_id = None
         self.task_phase = TaskPhase.IDLE
         return True
 
-    def shutdown(self) -> None:
-        """Reject future tasks and invalidate any task context without threading."""
+    def shutdown(self) -> bool:
+        """Invalidate task context and request repeatable orderly shutdown."""
 
+        self.task_phase = TaskPhase.SHUTTING_DOWN
         self.current_render_request_id = None
         self.current_recognition_request_id = None
-        self.task_phase = TaskPhase.SHUTTING_DOWN
+        if self._current_render_token is not None:
+            self._current_render_token.cancel()
+        self._current_render_token = None
 
-    def _require_idle_for_new_task(self) -> None:
+        if self._render_submitter is None:
+            return True
+
+        try:
+            stopped = self._render_submitter.shutdown()
+        except Exception:
+            self._record_render_shutdown_failure()
+            return False
+        if stopped is not True:
+            self._record_render_shutdown_failure()
+            return False
+        return True
+
+    def _require_render_submission_phase(self) -> None:
         if self.task_phase is TaskPhase.SHUTTING_DOWN:
             raise RuntimeError("The application is shutting down.")
-        if self.task_phase is not TaskPhase.IDLE:
+        if self.task_phase not in (TaskPhase.IDLE, TaskPhase.RENDERING):
             raise RuntimeError(
                 "A user-visible foreground task is already active.",
             )
+
+    def _restore_render_transaction(
+        self,
+        *,
+        request_id: int | None,
+        token: CancellationToken | None,
+        phase: TaskPhase,
+        next_request_id: int,
+    ) -> None:
+        self.current_render_request_id = request_id
+        self._current_render_token = token
+        self.task_phase = phase
+        self._next_request_id = next_request_id
+
+    def _record_render_submission_failure(self) -> None:
+        self.last_error_notice = ErrorInfo(
+            code=ErrorCode.INTERNAL_ERROR,
+            user_message=_RENDER_SUBMISSION_NOTICE,
+            recoverable=True,
+        )
+
+    def _record_render_shutdown_failure(self) -> None:
+        self.last_error_notice = ErrorInfo(
+            code=ErrorCode.INTERNAL_ERROR,
+            user_message=_RENDER_SHUTDOWN_NOTICE,
+            recoverable=False,
+        )

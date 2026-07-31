@@ -1,8 +1,8 @@
 # 数学绘图助手：架构约束
 
 版本：v0.1  
-最后更新：2026-07-19  
-状态：开发前架构基线（尚未实现）
+最后更新：2026-07-31
+状态：实施中的架构基线（阶段 10 RenderActor/Agg 技术边界已实现并通过最终技术复验；阶段 11 正式 UI 整合尚未实现）
 
 ## 1. 文档职责与事实来源
 
@@ -300,16 +300,26 @@ UI
 
 RenderActor 由一个长期存在的后台 QThread worker-object 或经批准的等价单并发执行器承载。应用中只存在一个 RenderActor 消费者，不创建多个渲染 worker 再用全局 Matplotlib 锁补救。
 
+阶段 10 的实现采用一个 GUI-owner `RenderActor` facade 和一个移动到唯一常驻 `QThread` 的 `_RenderWorker`。facade 的唤醒信号以 queued connection 进入 worker；worker 的内部结果信号再以 queued connection 进入 facade 的 `_relay_result`，由这个 GUI relay 在 owner/GUI 线程发射公共 `result_ready`。Engine 和 Matplotlib 不进入 GUI 线程，Qt GUI 对象也不进入 Actor 线程。
+
+上述唯一常驻 RenderActor、GUI relay 与正式 Qt/Agg 线程边界已经通过阶段 10 最终技术复验；Matplotlib 仍只由唯一 worker 串行进入。
+
 ### 8.2 队列和取消
 
-Actor 最多持有：
+阶段 10 的 mailbox 是共享锁保护的单槽 mailbox，不是 FIFO。Actor 最多持有：
 
 * 一个当前运行任务；
 * 一个最新待运行任务。
 
-新请求覆盖尚未开始的旧待运行请求（latest-wins），避免无界 FIFO。当前运行任务在解析阶段边界、item 边界、采样批次边界和渲染前后检查 cancellation token。
+`submit` 在 mailbox 锁内用新任务替换 `pending`，取消被替换的 pending，并取消 current token；`take_pending` 在同一把锁内把唯一 pending 移为 current；`complete` 在同一把锁内清除 current，并线性化“是否允许发布结果”的决定。因此 current/pending 不会同时指向两个运行任务，中间 pending 可以在进入 executor 前被覆盖，且不存在无界积压。
+
+新请求覆盖尚未开始的旧待运行请求（latest-wins）。协作取消使用 `workers/cancellation.py` 中 Qt 无关的 `CancellationToken`；取消边界至少包括 analyzer、spec builder、viewport resolver、RenderPlan builder、正式 sampler 和 renderer 之间的阶段边界；sampler 还在执行批次间轮询，renderer 在资源创建前、片段间、PNG 编码前后及返回 bytes 前轮询。同一个 task token 贯穿 Actor、sampler 和 renderer；`SamplingCancelled` / `RenderCancelled` 是中性取消结果，只由 Actor 的 token/result gate 抑制，不扩展 `ErrorCode`。
+
+结果门选择 **B**：`close()` 在 mailbox 锁内同时关闭提交门和结果门、清除 pending 并取消 current。关闭前尚未完成发布决定的结果不得发射；已经在线性化点获准、但 queued signal 仍在途的结果可以抵达 GUI relay，随后必须由已进入 `SHUTTING_DOWN` 且已清除 request/revision 上下文的 AppController 拒绝。不得把断开所有信号或无界等待当作结果门。
 
 取消是协作式的，不使用 `QThread.terminate()`。即使某个底层操作不能立即中断，旧 `request_id` 或 `scene_revision` 也使其结果无效。
+
+真实 Qt worker 在每任务消费边界遏制 `SystemExit`、`KeyboardInterrupt` 等 `BaseException`；这类异常不映射为业务结果，current token 仍在 `finally` 中清除，mailbox 随后继续消费 pending 任务。
 
 ### 8.3 Matplotlib 边界
 
@@ -317,7 +327,7 @@ Actor 最多持有：
 * 直接创建 `Figure` 和 `FigureCanvasAgg`；
 * 不依赖 `pyplot` 全局状态；
 * Figure、Axes、Canvas、字体管理和保存 PNG 均在 RenderActor 线程；
-* 每个请求在 `finally` 中释放 Figure、Canvas 引用、BytesIO 和大型数组；
+* 每个请求在 `finally` 中关闭 BytesIO，清理 Figure/Axes 并释放 Figure、Canvas 和大型 sampled 数组引用；
 * 任一时刻只有一个请求进入 Matplotlib。
 
 ### 8.4 关闭生命周期
@@ -331,6 +341,12 @@ Actor 最多持有：
 5. 请求线程有序退出并执行有上限的等待；
 6. 不让过期信号访问已关闭界面；
 7. 不使用强制终止补救正常生命周期设计。
+
+阶段 10 实现只接受 `[0, 60000]` ms 的 shutdown timeout；`bool`、非整数、负数和超上限值在任何 lifecycle、mailbox、token、result gate、stop flag 或 keepalive registry 变化前被拒绝，并且不会进入 `QThread.wait()`。
+
+`shutdown(timeout_ms)` 只执行一次有上限的协作等待。等待成功后进入 `STOPPED`；等待失败后进入 `TIMED_OUT`，并把仍在运行的 QThread、worker 和 finish observer 放入同步的临时 keepalive 注册表，直到线程真的结束或后续 `shutdown` 重试成功。超时后的重复 `shutdown` 可以重试，并在成功后最终进入 `STOPPED`。该注册表只防止 `QThread: Destroyed while thread is still running`，不把失败改写为成功。
+
+当 `shutdown()` 返回 `False` 时，长生命周期调用者必须保留/重试 Actor；不得完成最终 UI 应用、`QApplication`、模块或进程退出。阶段 11 的 UI → AppController → RenderActor 正式生产接线尚未实现；RenderActor 创建、result relay、`MainWindow.closeEvent`、AppController shutdown 结果和 `bootstrap` 最终退出仍须接线到正式应用，MainWindow 动态流程、preview 与 clipboard 也尚未整合。阶段 10 的 test-only executor 和可见桌面 probe 不构成阶段 11、M1 或上述 UI 整合结论。
 
 ## 9. 状态模型与 revision
 

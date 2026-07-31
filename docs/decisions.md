@@ -1,8 +1,8 @@
 # 数学绘图助手：架构与产品决策记录
 
 版本：v0.1  
-最后更新：2026-07-20  
-状态：开发前决策基线
+最后更新：2026-07-31
+状态：实施中的决策基线
 
 ## 1. 文档职责
 
@@ -83,6 +83,12 @@
 * 多进程：Rejected，超出首版范围和打包/内存预算。
 
 后果：Actor 只保留一个运行任务和一个 latest-wins 待任务；request_id、scene revision 和协作取消共同防止旧结果覆盖。
+
+实现反馈（阶段 10D，2026-07-31）：实现保持本决策，不新增平行绘图路径。`RenderActor` 使用一个常驻 QThread、共享锁保护的 current + 单槽 pending mailbox 和 GUI relay；选择结果门方案 B，即 close 在锁内关闭门并取消 retained work，未在线性化点获准的结果由 Actor 抑制，已经预线性化的在途 queued signal 由 `SHUTTING_DOWN` 的 AppController 拒绝。`TIMED_OUT` 使用临时 keepalive 注册表保有仍运行的 Qt 对象，`shutdown=False` 不能被最终应用/进程退出当作成功。
+
+阶段 10D 的 test-only formal executor 通过公开 API 组合 analyzer → spec → viewport → plan → sampler → Agg renderer。真实 probe 为 9 passed，workers 组合为 55 passed，阶段 8/9/10 相关组合为 317 passed，全量为 840 passed；20 次连续真实渲染后 Gcf、Figure/Canvas/BytesIO 和 sampled 数组均可释放。非 offscreen Windows 桌面交互观察确认快速 latest-wins、渲染期间 heartbeat/窗口响应、错误后恢复和渲染中关闭，无崩溃、无运行中析构警告、无残留 probe 进程。P0-04 曾据此关闭；最终只读验收随后发现真实 Qt worker slot 的 BaseException 隔离和 shutdown timeout 安全上界两个阻塞，P0-04 因此暂时重新打开。随后在真实 worker 每任务消费边界补齐 BaseException 遏制，并为构造参数和 shutdown override 统一增加 `[0, 60000]` ms 前置验证；阶段 10 最终独立技术复验确认两项阻塞均已消除，超时 keepalive 与重试至 `STOPPED` 也已验证。阶段 10 据此通过，P0-04 重新关闭。
+
+该反馈只确认 Actor/Matplotlib 边界，不表示阶段 11 已完成。正式 `MainWindow.closeEvent`、RenderActor/AppController result relay 和 `bootstrap` 退出门仍须在阶段 11 接线并重新做应用级桌面验收。
 
 ### D-004：TaskPhase + scene revision 状态模型
 

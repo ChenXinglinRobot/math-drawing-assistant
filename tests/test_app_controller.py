@@ -1,22 +1,68 @@
-"""Focused stage-2 behaviour tests for AppController."""
+"""Focused coordination and render-submission tests for AppController."""
 
 from __future__ import annotations
 
 import inspect
+from collections import deque
 
 import pytest
 
 import math_drawing_assistant.app_controller as controller_module
 from math_drawing_assistant.app_controller import AppController
 from math_drawing_assistant.models import (
+    ErrorCode,
     ErrorInfo,
     InputSource,
     PlotItemRequest,
     PlotKind,
+    PlotSceneRequest,
     PlotSceneResult,
     TaskPhase,
     ViewportRequest,
 )
+from math_drawing_assistant.workers import CancellationToken
+
+
+class _FakeRenderSubmitter:
+    def __init__(
+        self,
+        *,
+        submit_outcomes: tuple[bool | Exception, ...] = (),
+        shutdown_outcomes: tuple[bool | Exception, ...] = (),
+    ) -> None:
+        self._submit_outcomes = deque(submit_outcomes)
+        self._shutdown_outcomes = deque(shutdown_outcomes)
+        self.submit_attempts: list[
+            tuple[PlotSceneRequest, CancellationToken]
+        ] = []
+        self.accepted_submissions: list[
+            tuple[PlotSceneRequest, CancellationToken]
+        ] = []
+        self.shutdown_calls = 0
+
+    def submit(
+        self,
+        request: PlotSceneRequest,
+        token: CancellationToken,
+    ) -> bool:
+        self.submit_attempts.append((request, token))
+        outcome = self._submit_outcomes.popleft() if self._submit_outcomes else True
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome:
+            self.accepted_submissions.append((request, token))
+        return outcome
+
+    def shutdown(self) -> bool:
+        self.shutdown_calls += 1
+        outcome = (
+            self._shutdown_outcomes.popleft()
+            if self._shutdown_outcomes
+            else True
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 def _item() -> PlotItemRequest:
@@ -30,7 +76,7 @@ def _item() -> PlotItemRequest:
 
 
 def _start_render(controller: AppController):
-    return controller.create_render_request(
+    return controller.start_render(
         items=[_item()],
         viewport=ViewportRequest(),
         image_width=800,
@@ -65,6 +111,7 @@ def test_initial_state_is_idle_without_a_result() -> None:
     assert controller.task_phase is TaskPhase.IDLE
     assert controller.current_scene_revision == 0
     assert controller.current_render_request_id is None
+    assert controller._current_render_token is None
     assert controller.last_successful_result is None
     assert controller.last_result_scene_revision is None
     assert controller.last_error_notice is None
@@ -122,12 +169,136 @@ def test_created_request_uses_current_revision_and_owns_item_snapshot() -> None:
     assert controller.task_phase is TaskPhase.RENDERING
 
 
-def test_conflicting_foreground_render_is_rejected() -> None:
+def test_first_submission_commits_request_and_token() -> None:
+    submitter = _FakeRenderSubmitter()
+    controller = AppController(render_submitter=submitter)
+
+    request = _start_render(controller)
+    accepted_request, token = submitter.accepted_submissions[0]
+
+    assert accepted_request is request
+    assert request.request_id == 1
+    assert controller._next_request_id == 2
+    assert controller.current_render_request_id == request.request_id
+    assert controller._current_render_token is token
+    assert token.is_cancelled() is False
+    assert controller.task_phase is TaskPhase.RENDERING
+
+
+def test_successful_supersede_commits_new_context_and_rejects_old_result() -> None:
+    submitter = _FakeRenderSubmitter()
+    controller = AppController(render_submitter=submitter)
+    old_request = _start_render(controller)
+    old_token = submitter.accepted_submissions[0][1]
+    controller.mark_scene_edited()
+
+    new_request = _start_render(controller)
+    new_token = submitter.accepted_submissions[1][1]
+
+    assert new_request.request_id == old_request.request_id + 1
+    assert new_request.scene_revision == old_request.scene_revision + 1
+    assert controller.current_render_request_id == new_request.request_id
+    assert controller._current_render_token is new_token
+    assert old_token.is_cancelled() is True
+    assert new_token.is_cancelled() is False
+    assert controller.handle_render_result(_success_for(old_request)) is False
+    assert controller.current_render_request_id == new_request.request_id
+    assert controller._current_render_token is new_token
+    assert controller.task_phase is TaskPhase.RENDERING
+
+
+def test_compatibility_mode_supersede_also_cancels_old_token() -> None:
     controller = AppController()
     _start_render(controller)
+    old_token = controller._current_render_token
+    assert old_token is not None
+
+    new_request = _start_render(controller)
+
+    assert old_token.is_cancelled() is True
+    assert controller.current_render_request_id == new_request.request_id
+    assert controller._current_render_token is not old_token
+    assert controller._current_render_token is not None
+    assert controller._current_render_token.is_cancelled() is False
+
+
+def test_submit_false_preserves_active_transaction_and_request_id() -> None:
+    submitter = _FakeRenderSubmitter(submit_outcomes=(True, False))
+    controller = AppController(render_submitter=submitter)
+    active_request = _start_render(controller)
+    active_token = submitter.accepted_submissions[0][1]
+    next_request_id = controller._next_request_id
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _start_render(controller)
+
+    assert str(exc_info.value) == "The render request could not be submitted."
+    assert controller._next_request_id == next_request_id
+    assert controller.current_render_request_id == active_request.request_id
+    assert controller._current_render_token is active_token
+    assert controller.task_phase is TaskPhase.RENDERING
+    assert active_token.is_cancelled() is False
+    assert [request.request_id for request, _ in submitter.accepted_submissions] == [1]
+    assert submitter.submit_attempts[-1][0].request_id == next_request_id
+    assert controller.last_error_notice is not None
+    assert controller.last_error_notice.code is ErrorCode.INTERNAL_ERROR
+    assert controller.last_error_notice.technical_message is None
+
+    retry_request = _start_render(controller)
+    assert retry_request.request_id == next_request_id
+
+
+def test_submit_exception_preserves_core_state_and_redacts_details() -> None:
+    sensitive_detail = r"secret y=x at C:\private\plot.png"
+    submitter = _FakeRenderSubmitter(
+        submit_outcomes=(True, RuntimeError(sensitive_detail)),
+    )
+    controller = AppController(render_submitter=submitter)
+    active_request = _start_render(controller)
+    active_token = submitter.accepted_submissions[0][1]
+    next_request_id = controller._next_request_id
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _start_render(controller)
+
+    rejected_token = submitter.submit_attempts[-1][1]
+    assert str(exc_info.value) == "The render request could not be submitted."
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    assert controller._next_request_id == next_request_id
+    assert controller.current_render_request_id == active_request.request_id
+    assert controller._current_render_token is active_token
+    assert controller.task_phase is TaskPhase.RENDERING
+    assert active_token.is_cancelled() is False
+    assert rejected_token.is_cancelled() is True
+    assert [request.request_id for request, _ in submitter.accepted_submissions] == [1]
+    assert controller.last_error_notice is not None
+    assert controller.last_error_notice.code is ErrorCode.INTERNAL_ERROR
+    assert controller.last_error_notice.recoverable is True
+    assert controller.last_error_notice.technical_message is None
+    exposed_text = f"{exc_info.value!r} {controller.last_error_notice!r}"
+    assert sensitive_detail not in exposed_text
+    assert "y=x" not in exposed_text
+    assert "private" not in exposed_text
+
+
+@pytest.mark.parametrize(
+    "phase",
+    (TaskPhase.CAPTURING, TaskPhase.RECOGNIZING, TaskPhase.REVIEWING),
+)
+def test_non_rendering_foreground_phases_reject_render(phase: TaskPhase) -> None:
+    submitter = _FakeRenderSubmitter()
+    controller = AppController(render_submitter=submitter)
+    controller.task_phase = phase
 
     with pytest.raises(RuntimeError, match="already active"):
         _start_render(controller)
+
+    assert controller._next_request_id == 1
+    assert controller.current_render_request_id is None
+    assert controller._current_render_token is None
+    assert controller.task_phase is phase
+    assert submitter.submit_attempts == []
 
 
 def test_matching_success_result_is_accepted_and_marks_controller_ready() -> None:
@@ -138,6 +309,7 @@ def test_matching_success_result_is_accepted_and_marks_controller_ready() -> Non
     assert controller.last_successful_result == _success_for(request)
     assert controller.last_result_scene_revision == request.scene_revision
     assert controller.current_render_request_id is None
+    assert controller._current_render_token is None
     assert controller.task_phase is TaskPhase.IDLE
     assert controller.is_ready is True
 
@@ -190,11 +362,17 @@ def test_cancelling_an_active_task_preserves_previous_successful_plot() -> None:
 
     controller.mark_scene_edited()
     _start_render(controller)
+    active_token = controller._current_render_token
+    assert active_token is not None
     assert controller.cancel_active_task() is True
 
+    assert active_token.is_cancelled() is True
+    assert controller.current_render_request_id is None
+    assert controller._current_render_token is None
     assert controller.last_successful_result is successful_result
     assert controller.last_result_scene_revision == successful_request.scene_revision
     assert controller.task_phase is TaskPhase.IDLE
+    assert controller.cancel_active_task() is False
 
 
 def test_edit_makes_old_result_stale_but_keeps_copy_enabled() -> None:
@@ -221,14 +399,78 @@ def test_derived_statuses_are_read_only_and_not_duplicated_fields() -> None:
 def test_shutdown_invalidates_active_context_and_rejects_new_tasks() -> None:
     controller = AppController()
     request = _start_render(controller)
+    active_token = controller._current_render_token
+    assert active_token is not None
 
-    controller.shutdown()
+    assert controller.shutdown() is True
 
     assert controller.task_phase is TaskPhase.SHUTTING_DOWN
     assert controller.current_render_request_id is None
+    assert controller._current_render_token is None
+    assert active_token.is_cancelled() is True
     assert controller.handle_render_result(_success_for(request)) is False
     with pytest.raises(RuntimeError, match="shutting down"):
         _start_render(controller)
+
+
+def test_shutdown_success_is_repeatable_and_delegated_each_time() -> None:
+    submitter = _FakeRenderSubmitter()
+    controller = AppController(render_submitter=submitter)
+    _start_render(controller)
+    active_token = submitter.accepted_submissions[0][1]
+
+    assert controller.shutdown() is True
+    assert controller.shutdown() is True
+
+    assert submitter.shutdown_calls == 2
+    assert controller.task_phase is TaskPhase.SHUTTING_DOWN
+    assert controller.current_render_request_id is None
+    assert controller.current_recognition_request_id is None
+    assert controller._current_render_token is None
+    assert active_token.is_cancelled() is True
+
+
+def test_shutdown_false_is_redacted_and_retry_can_succeed() -> None:
+    sensitive_detail = r"secret shutdown path C:\private\plot.png"
+    submitter = _FakeRenderSubmitter(shutdown_outcomes=(False, True))
+    submitter.sensitive_detail = sensitive_detail
+    controller = AppController(render_submitter=submitter)
+    _start_render(controller)
+    active_token = submitter.accepted_submissions[0][1]
+
+    assert controller.shutdown() is False
+
+    assert controller.task_phase is TaskPhase.SHUTTING_DOWN
+    assert controller.current_render_request_id is None
+    assert controller._current_render_token is None
+    assert active_token.is_cancelled() is True
+    assert controller.last_error_notice is not None
+    assert controller.last_error_notice.code is ErrorCode.INTERNAL_ERROR
+    assert controller.last_error_notice.recoverable is False
+    assert controller.last_error_notice.technical_message is None
+    exposed_text = repr(controller.last_error_notice)
+    assert sensitive_detail not in exposed_text
+    assert "private" not in exposed_text
+
+    assert controller.shutdown() is True
+    assert submitter.shutdown_calls == 2
+
+
+def test_shutdown_exception_is_reported_without_leaking_details() -> None:
+    sensitive_detail = r"secret shutdown exception C:\private\plot.png"
+    submitter = _FakeRenderSubmitter(
+        shutdown_outcomes=(RuntimeError(sensitive_detail),),
+    )
+    controller = AppController(render_submitter=submitter)
+
+    assert controller.shutdown() is False
+
+    assert controller.last_error_notice is not None
+    assert controller.last_error_notice.code is ErrorCode.INTERNAL_ERROR
+    assert controller.last_error_notice.recoverable is False
+    exposed_text = repr(controller.last_error_notice)
+    assert sensitive_detail not in exposed_text
+    assert "private" not in exposed_text
 
 
 def test_app_controller_does_not_depend_on_rendering_or_gui_packages() -> None:
@@ -237,6 +479,8 @@ def test_app_controller_does_not_depend_on_rendering_or_gui_packages() -> None:
         "matplotlib",
         "numpy",
         "sympy",
+        "PySide6",
+        "math_drawing_assistant.ui",
         "QWidget",
         "RenderActor",
         "Worker",
