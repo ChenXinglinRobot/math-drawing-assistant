@@ -100,4 +100,3 @@ def test_run_builds_one_formal_runtime_and_holds_it_during_exec(
     runtime = app._math_drawing_assistant_runtime
     assert runtime.actor is created_actors[0]
     assert runtime.actor.shutdown_calls == 1
-
