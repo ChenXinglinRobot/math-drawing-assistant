@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
-文档版本：stage-9a-renderer-prerequisites-v1-worktree
-状态：阶段 7、8A、8B、8C-1 已通过；阶段 8C-2 的 explicit sampler、分段、可见性、取消与采样诊断已实现。阶段 9A 仅在当前工作树加固 sampled provenance 与 renderer 前置峰值预算，不实现 renderer，也未进入阶段 9B。
+文档版本：stage-11-m1-scene-flow-v1
+状态：阶段 7、8A、8B、8C-1、8C-2、9A、9B、10 与 11 已通过。Agg renderer 与唯一 RenderActor 已实现；阶段 11 已将正式 M1 单显函数 UI → AppController → RenderActor → SceneRenderExecutor → Engine/Agg → GUI preview 链接入。ClipboardService、QClipboard 与 M1 checkpoint 仍未完成。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图

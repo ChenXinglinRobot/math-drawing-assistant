@@ -1,8 +1,8 @@
 # 数学绘图助手：架构约束
 
 版本：v0.1  
-最后更新：2026-07-31
-状态：实施中的架构基线（阶段 10 RenderActor/Agg 技术边界已实现并通过最终技术复验；阶段 11 正式 UI 整合尚未实现）
+最后更新：2026-08-01
+状态：实施中的架构基线（阶段 11 正式 M1 单显函数 Scene 渲染链已通过；Clipboard、性能协议、M1 checkpoint 与阶段 12 尚未完成）
 
 ## 1. 文档职责与事实来源
 
@@ -304,6 +304,20 @@ RenderActor 由一个长期存在的后台 QThread worker-object 或经批准的
 
 上述唯一常驻 RenderActor、GUI relay 与正式 Qt/Agg 线程边界已经通过阶段 10 最终技术复验；Matplotlib 仍只由唯一 worker 串行进入。
 
+阶段 11 实施反馈：正式 bootstrap 只创建一个 `SceneRenderExecutor` 和一个 `RenderActor`，正式调用链为：
+
+```text
+MainWindow
+→ AppController
+→ RenderActor
+→ SceneRenderExecutor
+→ Engine/Agg
+→ GUI relay
+→ PlotPreview
+```
+
+`AppController` 只协调 UI 快照、请求、revision 和结果接纳，不做数学处理；`QImage` 与 `QPixmap` 只在 GUI 线程创建和使用。结果以 `ACCEPTED_SUCCESS`、`HANDLED_CURRENT_FAILURE` 和 `IGNORED_OBSOLETE` 三分处理：输入修改立即使旧图 stale，`request_id` 与 `scene_revision` 必须同时匹配；失败、取消和过期结果不覆盖上一张成功图。一个 current 加一个 latest pending 的有界 latest-wins mailbox 保持不变。
+
 ### 8.2 队列和取消
 
 阶段 10 的 mailbox 是共享锁保护的单槽 mailbox，不是 FIFO。Actor 最多持有：
@@ -346,7 +360,7 @@ RenderActor 由一个长期存在的后台 QThread worker-object 或经批准的
 
 `shutdown(timeout_ms)` 只执行一次有上限的协作等待。等待成功后进入 `STOPPED`；等待失败后进入 `TIMED_OUT`，并把仍在运行的 QThread、worker 和 finish observer 放入同步的临时 keepalive 注册表，直到线程真的结束或后续 `shutdown` 重试成功。超时后的重复 `shutdown` 可以重试，并在成功后最终进入 `STOPPED`。该注册表只防止 `QThread: Destroyed while thread is still running`，不把失败改写为成功。
 
-当 `shutdown()` 返回 `False` 时，长生命周期调用者必须保留/重试 Actor；不得完成最终 UI 应用、`QApplication`、模块或进程退出。阶段 11 的 UI → AppController → RenderActor 正式生产接线尚未实现；RenderActor 创建、result relay、`MainWindow.closeEvent`、AppController shutdown 结果和 `bootstrap` 最终退出仍须接线到正式应用，MainWindow 动态流程、preview 与 clipboard 也尚未整合。阶段 10 的 test-only executor 和可见桌面 probe 不构成阶段 11、M1 或上述 UI 整合结论。
+当 `shutdown()` 返回 `False` 时，长生命周期调用者必须保留/重试 Actor；不得完成最终 UI 应用、`QApplication`、模块或进程退出。阶段 11 已将该退出门接入正式 `MainWindow.closeEvent` 与 bootstrap：`shutdown=False` 阻止退出并允许后续重试。该实现不包含 ClipboardService、QClipboard、目标软件粘贴验收、正式性能 P50/P95 协议或 M1 checkpoint；阶段 12 尚未开始。
 
 ## 9. 状态模型与 revision
 

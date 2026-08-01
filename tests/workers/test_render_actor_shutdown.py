@@ -23,7 +23,10 @@ from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
 import math_drawing_assistant.workers.render_actor as actor_module
-from math_drawing_assistant.app_controller import AppController
+from math_drawing_assistant.app_controller import (
+    AppController,
+    RenderResultDisposition,
+)
 from math_drawing_assistant.models import (
     ErrorCode,
     InputSource,
@@ -186,7 +189,7 @@ class _ControllerReceiver(QObject):
         super().__init__()
         self._controller = controller
         self.thread_ids: list[int] = []
-        self.accepted: list[bool] = []
+        self.accepted: list[RenderResultDisposition] = []
         self.results: list[PlotSceneResult] = []
 
     @Slot(object)
@@ -494,7 +497,7 @@ def test_real_actor_success_is_accepted_only_on_gui_thread(actor_factory) -> Non
     assert len(executor.thread_ids) == 1
     assert executor.thread_ids[0] != gui_thread_id
     assert receiver.thread_ids == [gui_thread_id]
-    assert receiver.accepted == [True]
+    assert receiver.accepted == [RenderResultDisposition.ACCEPTED_SUCCESS]
     assert controller.last_successful_result is receiver.results[0]
     assert controller.task_phase is TaskPhase.IDLE
 
@@ -528,7 +531,7 @@ def test_real_actor_superseded_in_flight_result_is_rejected(actor_factory) -> No
     assert first_token.is_cancelled() is True
     assert second.request_id == first.request_id + 1
     _wait_for_count(processed, 1)
-    assert receiver.accepted == [False]
+    assert receiver.accepted == [RenderResultDisposition.IGNORED_OBSOLETE]
     assert controller.current_render_request_id == second.request_id
 
     assert executor.entered.get(timeout=3)[0] == first.request_id
@@ -536,7 +539,10 @@ def test_real_actor_superseded_in_flight_result_is_rejected(actor_factory) -> No
     executor.release(second.request_id)
     _wait_for_count(processed, 2)
 
-    assert receiver.accepted == [False, True]
+    assert receiver.accepted == [
+        RenderResultDisposition.IGNORED_OBSOLETE,
+        RenderResultDisposition.ACCEPTED_SUCCESS,
+    ]
     assert [result.request_id for result in receiver.results] == [
         first.request_id,
         second.request_id,
@@ -575,7 +581,7 @@ def test_shutdown_allows_prelinearized_worker_signal_but_controller_rejects_it(
     _wait_for_count(processed, 1)
 
     assert [result.request_id for result in receiver.results] == [request.request_id]
-    assert receiver.accepted == [False]
+    assert receiver.accepted == [RenderResultDisposition.IGNORED_OBSOLETE]
     assert controller.last_successful_result is None
 
 

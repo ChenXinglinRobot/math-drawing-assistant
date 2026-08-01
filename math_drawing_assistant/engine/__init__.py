@@ -1,4 +1,4 @@
-"""Public Engine contracts available through stage 8C-2."""
+"""Public Engine contracts available through stage 11A."""
 
 from math_drawing_assistant.engine.equation_splitter import (
     EquationInput,
@@ -24,6 +24,7 @@ from math_drawing_assistant.engine.renderer import (
     RenderOutcome,
     render_explicit_png,
 )
+from math_drawing_assistant.engine.scene_executor import SceneRenderExecutor
 from math_drawing_assistant.engine.samplers import (
     CancellationProbe,
     DenseOscillationMetrics,
@@ -102,6 +103,7 @@ __all__ = [
     "SamplingOutcome",
     "SamplingWarning",
     "SamplingWarningCode",
+    "SceneRenderExecutor",
     "SourceMap",
     "Token",
     "TokenKind",

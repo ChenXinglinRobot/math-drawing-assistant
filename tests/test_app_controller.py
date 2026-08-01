@@ -8,7 +8,14 @@ from collections import deque
 import pytest
 
 import math_drawing_assistant.app_controller as controller_module
-from math_drawing_assistant.app_controller import AppController
+from math_drawing_assistant.app_controller import (
+    M1_DEFAULT_DPI,
+    M1_DISPLAY_ORDER,
+    M1_SHOW_LEGEND,
+    M1_SINGLE_ITEM_ID,
+    AppController,
+    RenderResultDisposition,
+)
 from math_drawing_assistant.models import (
     ErrorCode,
     ErrorInfo,
@@ -169,6 +176,66 @@ def test_created_request_uses_current_revision_and_owns_item_snapshot() -> None:
     assert controller.task_phase is TaskPhase.RENDERING
 
 
+def test_m1_manual_adapter_uses_the_controller_defaults_and_four_bounds() -> None:
+    controller = AppController()
+
+    request = controller.create_m1_render_request(
+        formula_text="y=x^2",
+        viewport_mode="manual",
+        x_min=-3.0,
+        x_max=7.0,
+        y_min=-11.0,
+        y_max=13.0,
+        aspect_request="equal",
+        show_grid=False,
+        image_width=640,
+        image_height=480,
+    )
+
+    assert len(request.items) == 1
+    item = request.items[0]
+    assert item.item_id == M1_SINGLE_ITEM_ID
+    assert item.input_text == "y=x^2"
+    assert item.input_source is InputSource.MANUAL
+    assert item.requested_plot_kind is PlotKind.AUTO
+    assert item.display_order == M1_DISPLAY_ORDER
+    assert request.dpi == M1_DEFAULT_DPI
+    assert request.show_legend is M1_SHOW_LEGEND
+    assert request.show_grid is False
+    assert request.viewport.mode.value == "manual"
+    assert request.viewport.aspect_request.value == "equal"
+    assert (
+        request.viewport.x_min,
+        request.viewport.x_max,
+        request.viewport.y_min,
+        request.viewport.y_max,
+    ) == (-3.0, 7.0, -11.0, 13.0)
+
+
+def test_m1_auto_adapter_does_not_copy_disabled_display_bounds() -> None:
+    controller = AppController()
+
+    request = controller.create_m1_render_request(
+        formula_text="sin(x)",
+        viewport_mode="auto",
+        x_min=float("nan"),
+        x_max=float("nan"),
+        y_min=float("nan"),
+        y_max=float("nan"),
+        aspect_request="auto",
+        show_grid=True,
+        image_width=800,
+        image_height=600,
+    )
+
+    assert request.viewport.mode.value == "auto"
+    assert request.viewport.aspect_request.value == "auto"
+    assert request.viewport.x_min is None
+    assert request.viewport.x_max is None
+    assert request.viewport.y_min is None
+    assert request.viewport.y_max is None
+
+
 def test_first_submission_commits_request_and_token() -> None:
     submitter = _FakeRenderSubmitter()
     controller = AppController(render_submitter=submitter)
@@ -201,7 +268,9 @@ def test_successful_supersede_commits_new_context_and_rejects_old_result() -> No
     assert controller._current_render_token is new_token
     assert old_token.is_cancelled() is True
     assert new_token.is_cancelled() is False
-    assert controller.handle_render_result(_success_for(old_request)) is False
+    assert controller.handle_render_result(_success_for(old_request)) is (
+        RenderResultDisposition.IGNORED_OBSOLETE
+    )
     assert controller.current_render_request_id == new_request.request_id
     assert controller._current_render_token is new_token
     assert controller.task_phase is TaskPhase.RENDERING
@@ -305,7 +374,9 @@ def test_matching_success_result_is_accepted_and_marks_controller_ready() -> Non
     controller = AppController()
     request = _start_render(controller)
 
-    assert controller.handle_render_result(_success_for(request)) is True
+    assert controller.handle_render_result(_success_for(request)) is (
+        RenderResultDisposition.ACCEPTED_SUCCESS
+    )
     assert controller.last_successful_result == _success_for(request)
     assert controller.last_result_scene_revision == request.scene_revision
     assert controller.current_render_request_id is None
@@ -320,20 +391,25 @@ def test_old_request_result_cannot_clear_or_overwrite_newer_task() -> None:
     assert controller.cancel_active_task() is True
     new_request = _start_render(controller)
 
-    assert controller.handle_render_result(_success_for(old_request)) is False
+    assert controller.handle_render_result(_success_for(old_request)) is (
+        RenderResultDisposition.IGNORED_OBSOLETE
+    )
     assert controller.current_render_request_id == new_request.request_id
     assert controller.task_phase is TaskPhase.RENDERING
     assert controller.last_successful_result is None
 
 
-def test_current_request_with_old_revision_is_ignored_but_finishes_task() -> None:
+def test_current_request_with_old_revision_is_silent_and_finishes_task() -> None:
     controller = AppController()
     request = _start_render(controller)
     controller.mark_scene_edited()
 
-    assert controller.handle_render_result(_success_for(request)) is False
+    assert controller.handle_render_result(_success_for(request)) is (
+        RenderResultDisposition.IGNORED_OBSOLETE
+    )
     assert controller.last_successful_result is None
     assert controller.current_render_request_id is None
+    assert controller._current_render_token is None
     assert controller.task_phase is TaskPhase.IDLE
     assert controller.last_error_notice is None
 
@@ -346,7 +422,9 @@ def test_failure_preserves_previous_successful_plot_and_records_error() -> None:
 
     controller.mark_scene_edited()
     failed_request = _start_render(controller)
-    assert controller.handle_render_result(_failure_for(failed_request)) is False
+    assert controller.handle_render_result(_failure_for(failed_request)) is (
+        RenderResultDisposition.HANDLED_CURRENT_FAILURE
+    )
 
     assert controller.last_successful_result is successful_result
     assert controller.last_result_scene_revision == successful_request.scene_revision
@@ -408,7 +486,9 @@ def test_shutdown_invalidates_active_context_and_rejects_new_tasks() -> None:
     assert controller.current_render_request_id is None
     assert controller._current_render_token is None
     assert active_token.is_cancelled() is True
-    assert controller.handle_render_result(_success_for(request)) is False
+    assert controller.handle_render_result(_success_for(request)) is (
+        RenderResultDisposition.IGNORED_OBSOLETE
+    )
     with pytest.raises(RuntimeError, match="shutting down"):
         _start_render(controller)
 

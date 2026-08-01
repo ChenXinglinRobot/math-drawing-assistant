@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Iterable
+from enum import Enum, auto
+from typing import Final, Iterable
 
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo
 from math_drawing_assistant.models.requests import PlotItemRequest, PlotSceneRequest
 from math_drawing_assistant.models.results import PlotSceneResult
-from math_drawing_assistant.models.state import TaskPhase
+from math_drawing_assistant.models.state import (
+    AspectRequest,
+    InputSource,
+    PlotKind,
+    TaskPhase,
+    ViewportMode,
+)
 from math_drawing_assistant.models.viewport import ViewportRequest
 from math_drawing_assistant.workers.cancellation import (
     CancellationToken,
@@ -18,6 +25,19 @@ from math_drawing_assistant.workers.cancellation import (
 _RENDER_SUBMISSION_NOTICE = "Unable to start rendering."
 _RENDER_SUBMISSION_FAILURE = "The render request could not be submitted."
 _RENDER_SHUTDOWN_NOTICE = "Unable to shut down the render service."
+
+M1_DEFAULT_DPI: Final[int] = 96
+M1_SINGLE_ITEM_ID: Final[str] = "m1-manual-item"
+M1_SHOW_LEGEND: Final[bool] = False
+M1_DISPLAY_ORDER: Final[int] = 0
+
+
+class RenderResultDisposition(Enum):
+    """Controller-local decision for one relayed render result."""
+
+    ACCEPTED_SUCCESS = auto()
+    HANDLED_CURRENT_FAILURE = auto()
+    IGNORED_OBSOLETE = auto()
 
 
 class AppController:
@@ -136,6 +156,60 @@ class AppController:
             previous_token.cancel()
         return request
 
+    def create_m1_render_request(
+        self,
+        *,
+        formula_text: str,
+        viewport_mode: str,
+        x_min: float,
+        x_max: float,
+        y_min: float,
+        y_max: float,
+        aspect_request: str,
+        show_grid: bool,
+        image_width: int,
+        image_height: int,
+        created_at: datetime | None = None,
+    ) -> PlotSceneRequest:
+        """Adapt one Qt-free M1 UI snapshot into the formal scene request."""
+
+        mode = ViewportMode(viewport_mode)
+        aspect = AspectRequest(aspect_request)
+        if mode is ViewportMode.MANUAL:
+            viewport = ViewportRequest(
+                mode=mode,
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
+                aspect_request=aspect,
+            )
+        else:
+            # Disabled spin boxes retain display values in auto mode, but those
+            # values are not user-requested bounds and must not enter the model.
+            viewport = ViewportRequest(
+                mode=mode,
+                aspect_request=aspect,
+            )
+
+        item = PlotItemRequest(
+            item_id=M1_SINGLE_ITEM_ID,
+            input_text=formula_text,
+            input_source=InputSource.MANUAL,
+            requested_plot_kind=PlotKind.AUTO,
+            display_order=M1_DISPLAY_ORDER,
+        )
+        return self.create_render_request(
+            items=(item,),
+            viewport=viewport,
+            image_width=image_width,
+            image_height=image_height,
+            dpi=M1_DEFAULT_DPI,
+            show_grid=show_grid,
+            show_legend=M1_SHOW_LEGEND,
+            created_at=created_at,
+        )
+
     def start_render(
         self,
         *,
@@ -161,38 +235,41 @@ class AppController:
             created_at=created_at,
         )
 
-    def handle_render_result(self, result: PlotSceneResult) -> bool:
-        """Accept only a current, fresh successful render result.
-
-        Return True precisely when the result becomes the current successful
-        result. A current failed or stale result is handled and returns False;
-        an older request is ignored without changing any controller state.
-        """
+    def handle_render_result(
+        self,
+        result: PlotSceneResult,
+    ) -> RenderResultDisposition:
+        """Classify a result once, keeping stale-result policy out of the UI."""
 
         if not isinstance(result, PlotSceneResult):
             raise TypeError("result must be a PlotSceneResult.")
+        if self.task_phase is TaskPhase.SHUTTING_DOWN:
+            return RenderResultDisposition.IGNORED_OBSOLETE
         if result.request_id != self.current_render_request_id:
-            return False
+            return RenderResultDisposition.IGNORED_OBSOLETE
 
+        # This exact request has finished even when an intervening edit made
+        # its revision obsolete.  Clear the completed foreground context so a
+        # stale result cannot leave the UI permanently stuck in RENDERING.
         self.current_render_request_id = None
         self._current_render_token = None
         self.task_phase = TaskPhase.IDLE
 
         if result.scene_revision != self.current_scene_revision:
-            return False
+            return RenderResultDisposition.IGNORED_OBSOLETE
 
         if result.success:
             self.last_successful_result = result
             self.last_result_scene_revision = result.scene_revision
             self.last_error_notice = None
-            return True
+            return RenderResultDisposition.ACCEPTED_SUCCESS
 
         self.last_error_notice = result.error or ErrorInfo(
             code="render_failed",
             user_message="Unable to generate the plot.",
             recoverable=True,
         )
-        return False
+        return RenderResultDisposition.HANDLED_CURRENT_FAILURE
 
     def cancel_active_task(self) -> bool:
         """Invalidate the active foreground context while retaining old results."""

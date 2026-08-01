@@ -287,13 +287,13 @@ def test_idle_with_result_enables_generate_and_copy(qapp: QApplication) -> None:
         QApplication.processEvents()
 
 
-def test_rendering_disables_generate(qapp: QApplication) -> None:
-    """非 IDLE 前台阶段（RENDERING）不能重复生成。"""
+def test_rendering_allows_explicit_generate_supersede(qapp: QApplication) -> None:
+    """RENDERING 允许用户再次明确生成以提交 latest-wins 请求。"""
     window = MainWindow()
     try:
         window.apply_display_state(TaskPhase.RENDERING, False)
 
-        assert window.generate_button.isEnabled() is False
+        assert window.generate_button.isEnabled() is True
         assert window.clear_button.isEnabled() is True
         assert window.copy_button.isEnabled() is False
     finally:
@@ -325,7 +325,7 @@ def test_rendering_with_result_keeps_copy_enabled(qapp: QApplication) -> None:
         window.apply_display_state(TaskPhase.RENDERING, True)
 
         assert window.copy_button.isEnabled() is True
-        assert window.generate_button.isEnabled() is False
+        assert window.generate_button.isEnabled() is True
     finally:
         window.close()
         window.deleteLater()

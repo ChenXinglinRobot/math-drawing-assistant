@@ -24,6 +24,7 @@ class FormulaInputPanel(QWidget):
     """
 
     submit_requested = Signal()
+    scene_edited = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -67,6 +68,7 @@ class FormulaInputPanel(QWidget):
 
         # ---- 连接 ----
         self._input.returnPressed.connect(self.submit_requested)
+        self._input.textChanged.connect(self.scene_edited)
 
     # ------------------------------------------------------------------
     # 公共接口（供 MainWindow 读取和展示静态值）

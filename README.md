@@ -1,6 +1,6 @@
 # 数学绘图助手
 
-面向高中数学教师的 Windows 桌面绘图工具。当前仓库处于“架构与开发文档评审完成、开发阶段尚未开始”的状态；根目录现有 Python 文件仍是早期演示骨架，不代表 PRD 中的目标架构已经实现。
+面向高中数学教师的 Windows 桌面绘图工具。项目已完成至阶段 11：手动单显函数的正式 Scene 渲染链已接入。当前正式入口为 package bootstrap（`main.py → math_drawing_assistant.bootstrap`）；根目录遗留演示文件不是正式入口。
 
 文档入口：
 

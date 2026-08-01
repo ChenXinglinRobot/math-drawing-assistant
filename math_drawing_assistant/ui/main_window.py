@@ -1,18 +1,19 @@
-"""阶段 3 静态主窗口 —— 完整 UI 布局、信号和可访问性基线。
+"""正式 M1 主窗口：收集快照、展示结果并守住 GUI 线程边界。
 
 职责：
 1. 创建并布局所有静态控件面板；
 2. 声明用户意图信号（generate / clear / copy）；
-3. 提供 apply_display_state() 做纯显示映射；
+3. 把可选 AppController 的派生状态映射到控件；
 4. 建立 Tab 顺序、焦点、accessible name 和触控尺寸基线；
 5. 加载默认 QSS 主题。
 
-不调用 AppController，不创建 PlotSceneRequest，不解析公式，不启动线程。
+不解析公式，不构造 Engine 对象，不启动线程，不访问剪贴板。
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -24,6 +25,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from math_drawing_assistant.app_controller import (
+    AppController,
+    RenderResultDisposition,
+)
+from math_drawing_assistant.models.results import PlotSceneResult
 from math_drawing_assistant.models.state import TaskPhase
 from math_drawing_assistant.ui.theme import load_theme
 from math_drawing_assistant.ui.widgets import (
@@ -35,7 +41,7 @@ from math_drawing_assistant.ui.widgets import (
 
 
 class MainWindow(QMainWindow):
-    """阶段 3 静态主窗口。
+    """M1 main window with an optional controller for no-argument compatibility.
 
     信号:
         generate_requested: 用户点击"生成图像"或公式输入框 Enter。
@@ -66,7 +72,12 @@ class MainWindow(QMainWindow):
         TaskPhase.SHUTTING_DOWN: "warning",
     }
 
-    def __init__(self, theme_name: str = "light") -> None:
+    def __init__(
+        self,
+        theme_name: str = "light",
+        *,
+        controller: AppController | None = None,
+    ) -> None:
         """创建主窗口并加载默认主题。
 
         Args:
@@ -74,6 +85,7 @@ class MainWindow(QMainWindow):
                         正常启动不传参。
         """
         super().__init__()
+        self._controller = controller
 
         self.setWindowTitle("数学绘图助手")
         self.resize(960, 720)
@@ -123,11 +135,21 @@ class MainWindow(QMainWindow):
         # 公式输入框 Enter → 生成意图
         self._formula_panel.submit_requested.connect(self.generate_requested)
 
+        # MainWindow owns the one UI snapshot/revision adapter.  With no
+        # controller these connections retain the stage-3 signal-only mode.
+        self.generate_requested.connect(self._handle_generate_requested)
+        self.clear_requested.connect(self._handle_clear_requested)
+        self._formula_panel.scene_edited.connect(self._handle_scene_edited)
+        self._viewport_panel.scene_edited.connect(self._handle_scene_edited)
+
         # ---- 构建布局 ----
         self._build_layout()
 
         # ---- 建立 Tab 顺序 ----
         self._establish_tab_order()
+
+        if self._controller is not None:
+            self._sync_controller_state()
 
     # ------------------------------------------------------------------
     # 布局
@@ -228,10 +250,10 @@ class MainWindow(QMainWindow):
             has_plot_result: 是否存在可预览的成功图片结果。
         """
         shutting_down = task_phase is TaskPhase.SHUTTING_DOWN
-        is_idle = task_phase is TaskPhase.IDLE
+        render_allowed = task_phase in (TaskPhase.IDLE, TaskPhase.RENDERING)
 
         # ---- 按钮 ----
-        self._generate_button.setEnabled(is_idle)
+        self._generate_button.setEnabled(render_allowed)
         self._clear_button.setEnabled(not shutting_down)
         self._copy_button.setEnabled(has_plot_result and not shutting_down)
 
@@ -243,6 +265,146 @@ class MainWindow(QMainWindow):
         status_text = self._PHASE_STATUS_TEXT.get(task_phase, "就绪")
         status_level = self._PHASE_STATUS_LEVEL.get(task_phase, "idle")
         self._status_panel.set_status(status_text, status_level)
+
+    # ------------------------------------------------------------------
+    # M1 dynamic flow
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def _handle_scene_edited(self) -> None:
+        controller = self._controller
+        if controller is None:
+            return
+        try:
+            controller.mark_scene_edited()
+        except RuntimeError:
+            # A late widget signal cannot reopen work after shutdown begins.
+            return
+        self._sync_controller_state()
+
+    @Slot()
+    def _handle_clear_requested(self) -> None:
+        self._formula_panel.clear()
+        self._formula_panel.set_focus()
+
+    @Slot()
+    def _handle_generate_requested(self) -> None:
+        controller = self._controller
+        if controller is None:
+            return
+
+        # Read every UI value exactly once so one explicit action produces one
+        # immutable request snapshot even if queued edits follow immediately.
+        formula_text = self._formula_panel.text()
+        viewport_mode = self._viewport_panel.viewport_mode()
+        x_min = self._viewport_panel.x_min()
+        x_max = self._viewport_panel.x_max()
+        y_min = self._viewport_panel.y_min()
+        y_max = self._viewport_panel.y_max()
+        aspect_request = self._viewport_panel.aspect_mode()
+        show_grid = self._viewport_panel.show_grid()
+        image_width = self._viewport_panel.image_width()
+        image_height = self._viewport_panel.image_height()
+
+        try:
+            controller.create_m1_render_request(
+                formula_text=formula_text,
+                viewport_mode=viewport_mode,
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
+                aspect_request=aspect_request,
+                show_grid=show_grid,
+                image_width=image_width,
+                image_height=image_height,
+            )
+        except (RuntimeError, TypeError, ValueError):
+            notice = controller.last_error_notice
+            message = (
+                notice.user_message
+                if notice is not None
+                else "无法开始生成，请检查公式和视口设置。"
+            )
+            self._sync_controller_state()
+            self._status_panel.set_status(message, "error")
+            return
+
+        self._sync_controller_state()
+
+    @Slot(object)
+    def handle_render_result(
+        self,
+        result: PlotSceneResult,
+    ) -> RenderResultDisposition | None:
+        """Apply the controller's sole result classification on the GUI thread."""
+
+        controller = self._controller
+        if controller is None:
+            return None
+
+        disposition = controller.handle_render_result(result)
+        if disposition is RenderResultDisposition.IGNORED_OBSOLETE:
+            # A same-request result can become obsolete because the scene was
+            # edited while it ran.  The controller then finishes that request
+            # without accepting its payload, so refresh the phase/stale UI.
+            self._sync_controller_state()
+            return disposition
+
+        if disposition is RenderResultDisposition.ACCEPTED_SUCCESS:
+            accepted = controller.last_successful_result
+            if accepted is None or accepted.png_bytes is None:
+                self._status_panel.set_status("无法显示生成的图像。", "error")
+                return disposition
+            self._plot_preview.set_png_bytes(accepted.png_bytes)
+
+        self._sync_controller_state()
+        return disposition
+
+    def _sync_controller_state(self) -> None:
+        controller = self._controller
+        if controller is None:
+            return
+
+        self.apply_display_state(
+            controller.task_phase,
+            controller.copy_enabled,
+        )
+        self._plot_preview.set_stale(controller.result_is_stale)
+
+        if controller.task_phase is TaskPhase.SHUTTING_DOWN:
+            if controller.last_error_notice is not None:
+                self._status_panel.set_status(
+                    controller.last_error_notice.user_message,
+                    "error",
+                )
+            return
+        if controller.task_phase is TaskPhase.RENDERING:
+            return
+        if controller.last_error_notice is not None:
+            self._status_panel.set_status(
+                controller.last_error_notice.user_message,
+                "error",
+            )
+        elif controller.result_is_stale:
+            self._status_panel.set_status("输入已修改，当前图像对应旧输入。", "warning")
+        elif controller.is_ready:
+            self._status_panel.set_status("图像生成成功。", "success")
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Keep the event loop alive unless orderly Actor shutdown succeeds."""
+
+        controller = self._controller
+        if controller is None:
+            super().closeEvent(event)
+            return
+
+        stopped = controller.shutdown()
+        self._sync_controller_state()
+        if stopped:
+            event.accept()
+        else:
+            event.ignore()
 
     # ------------------------------------------------------------------
     # 便捷属性（供测试和外部读取）
@@ -282,3 +444,9 @@ class MainWindow(QMainWindow):
     def copy_button(self) -> QPushButton:
         """复制图片按钮。"""
         return self._copy_button
+
+    @property
+    def controller(self) -> AppController | None:
+        """Return the bound controller without creating a compatibility one."""
+
+        return self._controller

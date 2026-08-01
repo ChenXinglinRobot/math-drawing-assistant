@@ -88,7 +88,9 @@
 
 阶段 10D 的 test-only formal executor 通过公开 API 组合 analyzer → spec → viewport → plan → sampler → Agg renderer。真实 probe 为 9 passed，workers 组合为 55 passed，阶段 8/9/10 相关组合为 317 passed，全量为 840 passed；20 次连续真实渲染后 Gcf、Figure/Canvas/BytesIO 和 sampled 数组均可释放。非 offscreen Windows 桌面交互观察确认快速 latest-wins、渲染期间 heartbeat/窗口响应、错误后恢复和渲染中关闭，无崩溃、无运行中析构警告、无残留 probe 进程。P0-04 曾据此关闭；最终只读验收随后发现真实 Qt worker slot 的 BaseException 隔离和 shutdown timeout 安全上界两个阻塞，P0-04 因此暂时重新打开。随后在真实 worker 每任务消费边界补齐 BaseException 遏制，并为构造参数和 shutdown override 统一增加 `[0, 60000]` ms 前置验证；阶段 10 最终独立技术复验确认两项阻塞均已消除，超时 keepalive 与重试至 `STOPPED` 也已验证。阶段 10 据此通过，P0-04 重新关闭。
 
-该反馈只确认 Actor/Matplotlib 边界，不表示阶段 11 已完成。正式 `MainWindow.closeEvent`、RenderActor/AppController result relay 和 `bootstrap` 退出门仍须在阶段 11 接线并重新做应用级桌面验收。
+该反馈只确认 Actor/Matplotlib 边界，不表示阶段 11 已完成。
+
+阶段 11 实施反馈（2026-08-01）：正式 bootstrap、`MainWindow.closeEvent` 和 RenderActor/AppController result relay 已接入，且只存在一个正式 RenderActor 和一个正式 SceneRenderExecutor。AppController 以 `ACCEPTED_SUCCESS`、`HANDLED_CURRENT_FAILURE`、`IGNORED_OBSOLETE` 三分处理结果；`request_id` 与 `scene_revision` 双校验、输入立即 stale、latest-wins 有界 mailbox 与旧成功图保护均保持成立。`shutdown=False` 现正式阻止退出并允许重试。阶段 12 仍未开始；ClipboardService、QClipboard、目标软件粘贴验收、正式性能协议和 M1 checkpoint 均不在本阶段范围内。
 
 ### D-004：TaskPhase + scene revision 状态模型
 

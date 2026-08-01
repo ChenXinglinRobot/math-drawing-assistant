@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -38,6 +38,8 @@ class ViewportPanel(QGroupBox):
         "auto": "自动",
         "equal": "等比例",
     }
+
+    scene_edited = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("视口设置", parent)
@@ -133,6 +135,15 @@ class ViewportPanel(QGroupBox):
         # 连接：自动/手动切换边界控件启用状态
         # ------------------------------------------------------------------
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        self._mode_combo.currentIndexChanged.connect(self.scene_edited)
+        self._x_min.valueChanged.connect(self.scene_edited)
+        self._x_max.valueChanged.connect(self.scene_edited)
+        self._y_min.valueChanged.connect(self.scene_edited)
+        self._y_max.valueChanged.connect(self.scene_edited)
+        self._aspect_combo.currentIndexChanged.connect(self.scene_edited)
+        self._grid_checkbox.toggled.connect(self.scene_edited)
+        self._image_width.valueChanged.connect(self.scene_edited)
+        self._image_height.valueChanged.connect(self.scene_edited)
 
     # ------------------------------------------------------------------
     # 内部
