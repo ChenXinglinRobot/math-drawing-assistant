@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum, auto
 from typing import Final, Iterable
@@ -25,6 +26,7 @@ from math_drawing_assistant.workers.cancellation import (
 _RENDER_SUBMISSION_NOTICE = "Unable to start rendering."
 _RENDER_SUBMISSION_FAILURE = "The render request could not be submitted."
 _RENDER_SHUTDOWN_NOTICE = "Unable to shut down the render service."
+_RENDER_RESULT_CONTRACT_NOTICE = "Unable to generate the plot."
 
 M1_DEFAULT_DPI: Final[int] = 96
 M1_SINGLE_ITEM_ID: Final[str] = "m1-manual-item"
@@ -38,6 +40,58 @@ class RenderResultDisposition(Enum):
     ACCEPTED_SUCCESS = auto()
     HANDLED_CURRENT_FAILURE = auto()
     IGNORED_OBSOLETE = auto()
+
+
+class CopyPreparationStatus(Enum):
+    """Typed eligibility result for preparing one retained plot copy."""
+
+    AVAILABLE = auto()
+    NO_RESULT = auto()
+    SHUTTING_DOWN = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class CopyCandidate:
+    """Qt-free immutable snapshot of one accepted PNG eligible for copying."""
+
+    png_bytes: bytes
+    request_id: int
+    scene_revision: int
+    is_stale: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.png_bytes, bytes):
+            raise TypeError("CopyCandidate.png_bytes must be bytes.")
+        if isinstance(self.request_id, bool) or not isinstance(self.request_id, int):
+            raise TypeError("CopyCandidate.request_id must be an integer.")
+        if self.request_id < 1:
+            raise ValueError("CopyCandidate.request_id must be positive.")
+        if isinstance(self.scene_revision, bool) or not isinstance(
+            self.scene_revision,
+            int,
+        ):
+            raise TypeError("CopyCandidate.scene_revision must be an integer.")
+        if self.scene_revision < 0:
+            raise ValueError("CopyCandidate.scene_revision must not be negative.")
+        if not isinstance(self.is_stale, bool):
+            raise TypeError("CopyCandidate.is_stale must be a bool.")
+
+
+@dataclass(frozen=True, slots=True)
+class CopyPreparation:
+    """Immutable tagged result returned by :meth:`prepare_copy_candidate`."""
+
+    status: CopyPreparationStatus
+    candidate: CopyCandidate | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, CopyPreparationStatus):
+            raise TypeError("CopyPreparation.status must be a CopyPreparationStatus.")
+        if self.status is CopyPreparationStatus.AVAILABLE:
+            if not isinstance(self.candidate, CopyCandidate):
+                raise ValueError("AVAILABLE copy preparation requires a candidate.")
+        elif self.candidate is not None:
+            raise ValueError("Unavailable copy preparation cannot contain a candidate.")
 
 
 class AppController:
@@ -85,6 +139,30 @@ class AppController:
             and self.has_plot_result
             and not self.result_is_stale
         )
+
+    def prepare_copy_candidate(self) -> CopyPreparation:
+        """Return one immutable copy snapshot without changing controller state."""
+
+        if self.task_phase is TaskPhase.SHUTTING_DOWN:
+            return CopyPreparation(CopyPreparationStatus.SHUTTING_DOWN)
+
+        result = self.last_successful_result
+        if result is None:
+            return CopyPreparation(CopyPreparationStatus.NO_RESULT)
+
+        png_bytes = result.png_bytes
+        if not isinstance(png_bytes, bytes) or not png_bytes:
+            # Defensive only: handle_render_result prevents this state from
+            # entering last_successful_result through the production boundary.
+            return CopyPreparation(CopyPreparationStatus.NO_RESULT)
+
+        candidate = CopyCandidate(
+            png_bytes=png_bytes,
+            request_id=result.request_id,
+            scene_revision=result.scene_revision,
+            is_stale=result.scene_revision != self.current_scene_revision,
+        )
+        return CopyPreparation(CopyPreparationStatus.AVAILABLE, candidate)
 
     def mark_scene_edited(self) -> int:
         """Immediately record any edit that can change a generated result."""
@@ -257,6 +335,16 @@ class AppController:
 
         if result.scene_revision != self.current_scene_revision:
             return RenderResultDisposition.IGNORED_OBSOLETE
+
+        if result.success and (
+            not isinstance(result.png_bytes, bytes) or not result.png_bytes
+        ):
+            self.last_error_notice = ErrorInfo(
+                code=ErrorCode.INTERNAL_ERROR,
+                user_message=_RENDER_RESULT_CONTRACT_NOTICE,
+                recoverable=True,
+            )
+            return RenderResultDisposition.HANDLED_CURRENT_FAILURE
 
         if result.success:
             self.last_successful_result = result

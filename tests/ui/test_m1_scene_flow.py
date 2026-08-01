@@ -8,6 +8,7 @@ from dataclasses import replace
 from threading import Event, get_ident
 
 from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtGui import QImage
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
@@ -24,6 +25,11 @@ from math_drawing_assistant.models import (
     PlotKind,
     PlotSceneResult,
     TaskPhase,
+)
+from math_drawing_assistant.services.clipboard_service import (
+    ClipboardService,
+    ClipboardWriteResult,
+    ClipboardWriteStatus,
 )
 from math_drawing_assistant.ui.main_window import MainWindow
 from math_drawing_assistant.workers import CancellationToken
@@ -53,6 +59,17 @@ class _Submitter:
         return True
 
 
+class _FakeClipboard:
+    def __init__(self, *, failure: Exception | None = None) -> None:
+        self.failure = failure
+        self.images: list[QImage] = []
+
+    def setImage(self, image: QImage) -> None:
+        if self.failure is not None:
+            raise self.failure
+        self.images.append(image)
+
+
 def _window_with_submitter(
     qapp: QApplication,
     *,
@@ -64,6 +81,24 @@ def _window_with_submitter(
     window.show()
     QApplication.processEvents()
     return window, controller, submitter
+
+
+def _copy_window_with_submitter(
+    qapp: QApplication,
+    *,
+    clipboard_failure: Exception | None = None,
+) -> tuple[MainWindow, AppController, _Submitter, _FakeClipboard]:
+    submitter = _Submitter()
+    controller = AppController(render_submitter=submitter)
+    backend = _FakeClipboard(failure=clipboard_failure)
+    clipboard_service = ClipboardService(backend)
+    window = MainWindow(
+        controller=controller,
+        clipboard_service=clipboard_service,
+    )
+    window.show()
+    QApplication.processEvents()
+    return window, controller, submitter, backend
 
 
 def _success(request: object, png_bytes: bytes = PNG_3X2) -> PlotSceneResult:
@@ -232,6 +267,215 @@ def test_success_stale_failure_and_obsolete_ui_behavior(qapp: QApplication) -> N
         window.close()
         window.deleteLater()
         QApplication.processEvents()
+
+
+def test_one_copy_click_writes_once_and_feedback_restores_fresh_state(
+    qapp: QApplication,
+) -> None:
+    window, controller, submitter, backend = _copy_window_with_submitter(qapp)
+    try:
+        window.formula_panel.set_text("x")
+        window.generate_button.click()
+        request = submitter.submissions[0][0]
+        window.handle_render_result(_success(request))
+
+        window.copy_button.click()
+
+        assert len(backend.images) == 1
+        assert window.status_panel.status_text() == "图片已写入剪贴板"
+        assert window._copy_feedback_timer.isSingleShot() is True
+        assert window._copy_feedback_timer.isActive() is True
+        window._copy_feedback_timer.timeout.emit()
+        assert window.status_panel.status_text() == "图像生成成功。"
+        assert controller.is_ready is True
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+
+
+def test_stale_rendering_and_failed_current_copy_the_retained_old_plot(
+    qapp: QApplication,
+) -> None:
+    window, controller, submitter, backend = _copy_window_with_submitter(qapp)
+    try:
+        window.formula_panel.set_text("x")
+        window.generate_button.click()
+        old_request = submitter.submissions[0][0]
+        old_result = _success(old_request)
+        window.handle_render_result(old_result)
+
+        window.formula_panel.set_text("x+1")
+        window.copy_button.click()
+        assert len(backend.images) == 1
+        assert window.status_panel.status_text() == (
+            "已复制上一张图；当前输入已修改"
+        )
+
+        window.generate_button.click()
+        current_request = submitter.submissions[-1][0]
+        window.copy_button.click()
+        assert len(backend.images) == 2
+        assert window.status_panel.status_text() == (
+            "已复制上一张图；新图仍在生成"
+        )
+
+        window.handle_render_result(_failure(current_request))
+        assert controller.last_successful_result is old_result
+        window.copy_button.click()
+        assert len(backend.images) == 3
+        assert window.status_panel.status_text() == (
+            "已复制上一张图；当前输入已修改"
+        )
+        assert window.plot_preview.source_image is not None
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+
+
+def test_no_result_and_shutdown_reject_copy_without_backend_write(
+    qapp: QApplication,
+) -> None:
+    window, controller, _, backend = _copy_window_with_submitter(qapp)
+    try:
+        window._handle_copy_requested()
+        assert backend.images == []
+        assert window.status_panel.status_text() == "暂无可复制图片"
+
+        assert controller.shutdown() is True
+        window._handle_copy_requested()
+        assert backend.images == []
+        assert window.status_panel.status_text() == "正在关闭…"
+        assert window._copy_feedback_timer.isActive() is False
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+
+
+def test_copy_exception_preserves_preview_and_all_controller_state(
+    qapp: QApplication,
+) -> None:
+    window, controller, submitter, backend = _copy_window_with_submitter(
+        qapp,
+        clipboard_failure=RuntimeError("clipboard unavailable"),
+    )
+    try:
+        window.formula_panel.set_text("x")
+        window.generate_button.click()
+        request = submitter.submissions[0][0]
+        result = _success(request)
+        window.handle_render_result(result)
+        window.formula_panel.set_text("x+1")
+        retained_image = window.plot_preview.source_image
+        state_before = (
+            controller.current_scene_revision,
+            controller.task_phase,
+            controller.result_is_stale,
+            controller.is_ready,
+            controller.last_successful_result,
+            controller.last_result_scene_revision,
+        )
+
+        window.copy_button.click()
+
+        assert backend.images == []
+        assert window.status_panel.status_text() == "无法写入剪贴板，请重试"
+        assert window.plot_preview.source_image == retained_image
+        assert (
+            controller.current_scene_revision,
+            controller.task_phase,
+            controller.result_is_stale,
+            controller.is_ready,
+            controller.last_successful_result,
+            controller.last_result_scene_revision,
+        ) == state_before
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+
+
+def test_invalid_image_copy_feedback_does_not_remove_preview(
+    qapp: QApplication,
+) -> None:
+    class _InvalidClipboardService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def write_candidate(self, candidate: object) -> ClipboardWriteResult:
+            self.calls += 1
+            return ClipboardWriteResult(ClipboardWriteStatus.INVALID_IMAGE)
+
+    submitter = _Submitter()
+    controller = AppController(render_submitter=submitter)
+    service = _InvalidClipboardService()
+    window = MainWindow(  # type: ignore[arg-type]
+        controller=controller,
+        clipboard_service=service,
+    )
+    window.show()
+    QApplication.processEvents()
+    try:
+        window.formula_panel.set_text("x")
+        window.generate_button.click()
+        request = submitter.submissions[0][0]
+        window.handle_render_result(_success(request))
+        retained_image = window.plot_preview.source_image
+
+        window.copy_button.click()
+
+        assert service.calls == 1
+        assert window.status_panel.status_text() == "图片数据无效，复制失败"
+        assert window.plot_preview.source_image == retained_image
+        assert controller.last_successful_result is not None
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+
+
+def test_copy_feedback_is_replaced_cancelled_by_new_result_and_never_reopens_shutdown(
+    qapp: QApplication,
+) -> None:
+    window, controller, submitter, backend = _copy_window_with_submitter(qapp)
+    window.formula_panel.set_text("x")
+    window.generate_button.click()
+    first_request = submitter.submissions[0][0]
+    window.handle_render_result(_success(first_request))
+
+    window.copy_button.click()
+    assert window._copy_feedback_timer.isActive() is True
+    window.formula_panel.set_text("x+1")
+    assert window._copy_feedback_timer.isActive() is False
+
+    window.copy_button.click()
+    assert len(backend.images) == 2
+    assert window.status_panel.status_text() == "已复制上一张图；当前输入已修改"
+    assert window._copy_feedback_timer.isActive() is True
+
+    window.generate_button.click()
+    second_request = submitter.submissions[-1][0]
+    window.copy_button.click()
+    assert window.status_panel.status_text() == "已复制上一张图；新图仍在生成"
+    assert window._copy_feedback_timer.isActive() is True
+
+    window.handle_render_result(_success(second_request))
+    assert window._copy_feedback_timer.isActive() is False
+    assert window.status_panel.status_text() == "图像生成成功。"
+
+    window.copy_button.click()
+    assert window._copy_feedback_timer.isActive() is True
+    assert window.close() is True
+    assert controller.task_phase is TaskPhase.SHUTTING_DOWN
+    assert window._copy_feedback_timer.isActive() is False
+    status_after_shutdown = window.status_panel.status_text()
+    window._copy_feedback_timer.timeout.emit()
+    assert window.status_panel.status_text() == status_after_shutdown
+    assert window.copy_button.isEnabled() is False
+    window.deleteLater()
+    QApplication.processEvents()
 
 
 class _RecordingSceneExecutor:
@@ -648,10 +892,14 @@ def test_close_false_keeps_runtime_alive_silent_results_and_allows_retry(
     QApplication.processEvents()
 
 
-def test_main_window_source_does_not_implement_stage_12_clipboard() -> None:
+def test_main_window_delegates_clipboard_io_to_the_injected_service() -> None:
     import inspect
     import math_drawing_assistant.ui.main_window as main_window_module
 
     source = inspect.getsource(main_window_module)
-    assert "QClipboard" not in source
-    assert "ClipboardService" not in source
+    assert "import QClipboard" not in source
+    assert ".clipboard()" not in source
+    assert "setImage(" not in source
+    assert "qimage_from_png_bytes" not in source
+    assert "ClipboardService" in source
+    assert "copy_requested.connect(self._handle_copy_requested)" in source

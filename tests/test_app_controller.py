@@ -14,6 +14,7 @@ from math_drawing_assistant.app_controller import (
     M1_SHOW_LEGEND,
     M1_SINGLE_ITEM_ID,
     AppController,
+    CopyPreparationStatus,
     RenderResultDisposition,
 )
 from math_drawing_assistant.models import (
@@ -383,6 +384,135 @@ def test_matching_success_result_is_accepted_and_marks_controller_ready() -> Non
     assert controller._current_render_token is None
     assert controller.task_phase is TaskPhase.IDLE
     assert controller.is_ready is True
+
+
+@pytest.mark.parametrize("png_bytes", [None, b""])
+def test_malformed_success_without_old_plot_is_handled_as_internal_failure(
+    png_bytes: bytes | None,
+) -> None:
+    controller = AppController()
+    request = _start_render(controller)
+    malformed = PlotSceneResult(
+        request_id=request.request_id,
+        scene_revision=request.scene_revision,
+        success=True,
+        png_bytes=png_bytes,
+    )
+
+    disposition = controller.handle_render_result(malformed)
+
+    assert disposition is RenderResultDisposition.HANDLED_CURRENT_FAILURE
+    assert controller.last_successful_result is None
+    assert controller.last_result_scene_revision is None
+    assert controller.has_plot_result is False
+    assert controller.copy_enabled is False
+    assert controller.is_ready is False
+    assert controller.task_phase is TaskPhase.IDLE
+    assert controller.last_error_notice is not None
+    assert controller.last_error_notice.code is ErrorCode.INTERNAL_ERROR
+
+
+def test_malformed_success_preserves_old_plot_and_its_revision() -> None:
+    controller = AppController()
+    successful_request = _start_render(controller)
+    successful_result = _success_for(successful_request)
+    controller.handle_render_result(successful_result)
+    controller.mark_scene_edited()
+    malformed_request = _start_render(controller)
+    malformed = PlotSceneResult(
+        request_id=malformed_request.request_id,
+        scene_revision=malformed_request.scene_revision,
+        success=True,
+        png_bytes=None,
+    )
+
+    disposition = controller.handle_render_result(malformed)
+
+    assert disposition is RenderResultDisposition.HANDLED_CURRENT_FAILURE
+    assert controller.last_successful_result is successful_result
+    assert controller.last_result_scene_revision == successful_request.scene_revision
+    assert controller.copy_enabled is True
+    assert controller.result_is_stale is True
+    assert controller.is_ready is False
+    assert controller.last_error_notice is not None
+    assert controller.last_error_notice.code is ErrorCode.INTERNAL_ERROR
+
+
+def test_prepare_copy_candidate_reports_no_result_and_shutdown_without_mutation() -> None:
+    controller = AppController()
+    before = controller.__dict__.copy()
+
+    no_result = controller.prepare_copy_candidate()
+
+    assert no_result.status is CopyPreparationStatus.NO_RESULT
+    assert no_result.candidate is None
+    assert controller.__dict__ == before
+
+    controller.shutdown()
+    before_shutdown_copy = controller.__dict__.copy()
+    shutting_down = controller.prepare_copy_candidate()
+
+    assert shutting_down.status is CopyPreparationStatus.SHUTTING_DOWN
+    assert shutting_down.candidate is None
+    assert controller.__dict__ == before_shutdown_copy
+
+
+def test_prepare_copy_candidate_fresh_and_stale_fields_share_result_snapshot() -> None:
+    controller = AppController()
+    request = _start_render(controller)
+    result = _success_for(request)
+    controller.handle_render_result(result)
+    before = controller.__dict__.copy()
+
+    fresh = controller.prepare_copy_candidate()
+
+    assert fresh.status is CopyPreparationStatus.AVAILABLE
+    assert fresh.candidate is not None
+    assert fresh.candidate.png_bytes is result.png_bytes
+    assert fresh.candidate.request_id == result.request_id
+    assert fresh.candidate.scene_revision == result.scene_revision
+    assert fresh.candidate.is_stale is False
+    assert controller.__dict__ == before
+
+    controller.mark_scene_edited()
+    stale_before = controller.__dict__.copy()
+    stale = controller.prepare_copy_candidate()
+
+    assert stale.status is CopyPreparationStatus.AVAILABLE
+    assert stale.candidate is not None
+    assert stale.candidate.png_bytes is result.png_bytes
+    assert stale.candidate.request_id == result.request_id
+    assert stale.candidate.scene_revision == result.scene_revision
+    assert stale.candidate.is_stale is True
+    assert controller.__dict__ == stale_before
+
+
+def test_prepare_copy_candidate_keeps_old_plot_during_render_and_after_failure() -> None:
+    controller = AppController()
+    old_request = _start_render(controller)
+    old_result = _success_for(old_request)
+    controller.handle_render_result(old_result)
+    controller.mark_scene_edited()
+    current_request = _start_render(controller)
+
+    rendering = controller.prepare_copy_candidate()
+
+    assert controller.task_phase is TaskPhase.RENDERING
+    assert rendering.status is CopyPreparationStatus.AVAILABLE
+    assert rendering.candidate is not None
+    assert rendering.candidate.png_bytes is old_result.png_bytes
+    assert rendering.candidate.is_stale is True
+
+    controller.handle_render_result(_failure_for(current_request))
+    failure_before = controller.__dict__.copy()
+    after_failure = controller.prepare_copy_candidate()
+
+    assert after_failure.status is CopyPreparationStatus.AVAILABLE
+    assert after_failure.candidate is not None
+    assert after_failure.candidate.request_id == old_result.request_id
+    assert after_failure.candidate.scene_revision == old_result.scene_revision
+    assert after_failure.candidate.is_stale is True
+    assert controller.__dict__ == failure_before
 
 
 def test_old_request_result_cannot_clear_or_overwrite_newer_task() -> None:

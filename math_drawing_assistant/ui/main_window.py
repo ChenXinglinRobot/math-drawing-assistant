@@ -7,12 +7,12 @@
 4. 建立 Tab 顺序、焦点、accessible name 和触控尺寸基线；
 5. 加载默认 QSS 主题。
 
-不解析公式，不构造 Engine 对象，不启动线程，不访问剪贴板。
+不解析公式，不构造 Engine 对象，不启动线程，不直接访问 QClipboard。
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -27,10 +27,15 @@ from PySide6.QtWidgets import (
 
 from math_drawing_assistant.app_controller import (
     AppController,
+    CopyPreparationStatus,
     RenderResultDisposition,
 )
 from math_drawing_assistant.models.results import PlotSceneResult
 from math_drawing_assistant.models.state import TaskPhase
+from math_drawing_assistant.services.clipboard_service import (
+    ClipboardService,
+    ClipboardWriteStatus,
+)
 from math_drawing_assistant.ui.theme import load_theme
 from math_drawing_assistant.ui.widgets import (
     FormulaInputPanel,
@@ -52,6 +57,8 @@ class MainWindow(QMainWindow):
     generate_requested = Signal()
     clear_requested = Signal()
     copy_requested = Signal()
+
+    COPY_FEEDBACK_DURATION_MS = 1500
 
     # ---- TaskPhase → 状态文字映射 ----
     _PHASE_STATUS_TEXT: dict[TaskPhase, str] = {
@@ -77,6 +84,7 @@ class MainWindow(QMainWindow):
         theme_name: str = "light",
         *,
         controller: AppController | None = None,
+        clipboard_service: ClipboardService | None = None,
     ) -> None:
         """创建主窗口并加载默认主题。
 
@@ -86,6 +94,7 @@ class MainWindow(QMainWindow):
         """
         super().__init__()
         self._controller = controller
+        self._clipboard_service = clipboard_service
 
         self.setWindowTitle("数学绘图助手")
         self.resize(960, 720)
@@ -127,6 +136,10 @@ class MainWindow(QMainWindow):
         self._copy_button.setMinimumHeight(44)
         self._copy_button.setEnabled(False)  # 无图片时禁用
 
+        self._copy_feedback_timer = QTimer(self)
+        self._copy_feedback_timer.setSingleShot(True)
+        self._copy_feedback_timer.timeout.connect(self._restore_after_copy_feedback)
+
         # ---- 连接信号（按钮 → MainWindow 信号）----
         self._generate_button.clicked.connect(self.generate_requested)
         self._clear_button.clicked.connect(self.clear_requested)
@@ -139,6 +152,7 @@ class MainWindow(QMainWindow):
         # controller these connections retain the stage-3 signal-only mode.
         self.generate_requested.connect(self._handle_generate_requested)
         self.clear_requested.connect(self._handle_clear_requested)
+        self.copy_requested.connect(self._handle_copy_requested)
         self._formula_panel.scene_edited.connect(self._handle_scene_edited)
         self._viewport_panel.scene_edited.connect(self._handle_scene_edited)
 
@@ -272,6 +286,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _handle_scene_edited(self) -> None:
+        self._cancel_copy_feedback()
         controller = self._controller
         if controller is None:
             return
@@ -284,11 +299,13 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _handle_clear_requested(self) -> None:
+        self._cancel_copy_feedback()
         self._formula_panel.clear()
         self._formula_panel.set_focus()
 
     @Slot()
     def _handle_generate_requested(self) -> None:
+        self._cancel_copy_feedback()
         controller = self._controller
         if controller is None:
             return
@@ -332,6 +349,47 @@ class MainWindow(QMainWindow):
 
         self._sync_controller_state()
 
+    @Slot()
+    def _handle_copy_requested(self) -> None:
+        """Execute the Controller-approved copy path exactly once per intent."""
+
+        controller = self._controller
+        if controller is None:
+            return
+
+        preparation = controller.prepare_copy_candidate()
+        if preparation.status is CopyPreparationStatus.SHUTTING_DOWN:
+            self._cancel_copy_feedback()
+            self._sync_controller_state()
+            return
+        if preparation.candidate is None:
+            self._show_copy_feedback("暂无可复制图片", "warning")
+            return
+
+        service = self._clipboard_service
+        if service is None:
+            self._show_copy_feedback("无法写入剪贴板，请重试", "error")
+            return
+
+        outcome = service.write_candidate(preparation.candidate)
+        if outcome.status is ClipboardWriteStatus.INVALID_IMAGE:
+            self._show_copy_feedback("图片数据无效，复制失败", "error")
+            return
+        if outcome.status is ClipboardWriteStatus.WRITE_EXCEPTION:
+            self._show_copy_feedback("无法写入剪贴板，请重试", "error")
+            return
+
+        if controller.task_phase is TaskPhase.RENDERING:
+            message = "已复制上一张图；新图仍在生成"
+            level = "warning"
+        elif preparation.candidate.is_stale:
+            message = "已复制上一张图；当前输入已修改"
+            level = "warning"
+        else:
+            message = "图片已写入剪贴板"
+            level = "success"
+        self._show_copy_feedback(message, level)
+
     @Slot(object)
     def handle_render_result(
         self,
@@ -343,6 +401,7 @@ class MainWindow(QMainWindow):
         if controller is None:
             return None
 
+        self._cancel_copy_feedback()
         disposition = controller.handle_render_result(result)
         if disposition is RenderResultDisposition.IGNORED_OBSOLETE:
             # A same-request result can become obsolete because the scene was
@@ -391,9 +450,23 @@ class MainWindow(QMainWindow):
         elif controller.is_ready:
             self._status_panel.set_status("图像生成成功。", "success")
 
+    def _show_copy_feedback(self, message: str, level: str) -> None:
+        self._copy_feedback_timer.stop()
+        self._status_panel.set_status(message, level)
+        self._copy_feedback_timer.start(self.COPY_FEEDBACK_DURATION_MS)
+
+    def _cancel_copy_feedback(self) -> None:
+        if self._copy_feedback_timer.isActive():
+            self._copy_feedback_timer.stop()
+
+    @Slot()
+    def _restore_after_copy_feedback(self) -> None:
+        self._sync_controller_state()
+
     def closeEvent(self, event: QCloseEvent) -> None:
         """Keep the event loop alive unless orderly Actor shutdown succeeds."""
 
+        self._cancel_copy_feedback()
         controller = self._controller
         if controller is None:
             super().closeEvent(event)
@@ -450,3 +523,9 @@ class MainWindow(QMainWindow):
         """Return the bound controller without creating a compatibility one."""
 
         return self._controller
+
+    @property
+    def clipboard_service(self) -> ClipboardService | None:
+        """Return the injected service without creating another clipboard path."""
+
+        return self._clipboard_service
