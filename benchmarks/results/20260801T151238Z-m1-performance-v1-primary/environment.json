@@ -1,0 +1,38 @@
+{
+  "cpu": "Intel64 Family 6 Model 170 Stepping 4, GenuineIntel",
+  "dependencies": {
+    "Matplotlib": "3.11.1",
+    "NumPy": "2.5.1",
+    "PySide6": "6.11.1",
+    "SymPy": "1.14.0"
+  },
+  "display_topology": [
+    [
+      "\\\\.\\DISPLAY1",
+      0,
+      0,
+      1536,
+      960,
+      96.0,
+      125.0462,
+      2.0
+    ]
+  ],
+  "logical_processors": 22,
+  "memory_bytes": 33945935872,
+  "mplconfigdir": "<external-mplconfigdir>",
+  "mplconfigdir_policy": "shared-prepared-external-directory",
+  "power_mode": "电源方案 GUID: <guid>  (平衡)",
+  "project_commit": "03ea18dc527b02cd361b22f0cf13d2153fee0c17",
+  "protocol_version": "m1-performance-v1",
+  "python": "3.12.11",
+  "qt": {
+    "library": "6.11.1",
+    "runtime": "6.11.1"
+  },
+  "windows": {
+    "build": "26200.8875",
+    "edition": "Windows 10 Home China",
+    "version": "25H2"
+  }
+}

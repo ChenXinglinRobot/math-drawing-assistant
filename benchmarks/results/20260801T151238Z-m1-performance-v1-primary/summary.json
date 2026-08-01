@@ -1,0 +1,117 @@
+{
+  "counts": {
+    "cancelled": 0,
+    "failure": 0,
+    "invalid": 0,
+    "timeout": 0
+  },
+  "overall_measurement": {
+    "max_ms": 265.0000000012369,
+    "p50_ms": 155.99999999903957,
+    "p95_ms": 202.9999999995198,
+    "scheduled_count": 240,
+    "valid_success_count": 240
+  },
+  "per_formula": {
+    "dense_oscillation": {
+      "exact_input": "sin(1000*x)",
+      "gui_gap_threshold_status": "met",
+      "max_ms": 218.99999999914144,
+      "p50_ms": 156.00000000085856,
+      "p95_ms": 188.00000000010186,
+      "render_threshold_status": "met",
+      "sample_count": 30,
+      "timer_max_gap_p95_ms": 61.99999999989814,
+      "valid_success_count": 30
+    },
+    "exponential": {
+      "exact_input": "exp(x)",
+      "gui_gap_threshold_status": "met",
+      "max_ms": 265.0000000012369,
+      "p50_ms": 140.99999999962165,
+      "p95_ms": 188.00000000010186,
+      "render_threshold_status": "met",
+      "sample_count": 30,
+      "timer_max_gap_p95_ms": 47.00000000048021,
+      "valid_success_count": 30
+    },
+    "identity": {
+      "exact_input": "x=y",
+      "gui_gap_threshold_status": "met",
+      "max_ms": 203.00000000133878,
+      "p50_ms": 156.00000000085856,
+      "p95_ms": 202.9999999995198,
+      "render_threshold_status": "met",
+      "sample_count": 30,
+      "timer_max_gap_p95_ms": 61.99999999989814,
+      "valid_success_count": 30
+    },
+    "logarithmic": {
+      "exact_input": "log(x,10)",
+      "gui_gap_threshold_status": "met",
+      "max_ms": 188.00000000010186,
+      "p50_ms": 155.99999999903957,
+      "p95_ms": 188.00000000010186,
+      "render_threshold_status": "met",
+      "sample_count": 30,
+      "timer_max_gap_p95_ms": 47.00000000048021,
+      "valid_success_count": 30
+    },
+    "quadratic": {
+      "exact_input": "x^2",
+      "gui_gap_threshold_status": "met",
+      "max_ms": 235.00000000058208,
+      "p50_ms": 140.99999999962165,
+      "p95_ms": 203.9999999997235,
+      "render_threshold_status": "met",
+      "sample_count": 30,
+      "timer_max_gap_p95_ms": 63.00000000010186,
+      "valid_success_count": 30
+    },
+    "reciprocal": {
+      "exact_input": "1/x",
+      "gui_gap_threshold_status": "met",
+      "max_ms": 188.00000000010186,
+      "p50_ms": 155.99999999903957,
+      "p95_ms": 188.00000000010186,
+      "render_threshold_status": "met",
+      "sample_count": 30,
+      "timer_max_gap_p95_ms": 47.00000000048021,
+      "valid_success_count": 30
+    },
+    "restricted_domain": {
+      "exact_input": "ln(x)",
+      "gui_gap_threshold_status": "met",
+      "max_ms": 202.9999999995198,
+      "p50_ms": 140.99999999962165,
+      "p95_ms": 202.9999999995198,
+      "render_threshold_status": "met",
+      "sample_count": 30,
+      "timer_max_gap_p95_ms": 61.99999999989814,
+      "valid_success_count": 30
+    },
+    "trigonometric": {
+      "exact_input": "sin(x)",
+      "gui_gap_threshold_status": "met",
+      "max_ms": 234.00000000037835,
+      "p50_ms": 155.99999999903957,
+      "p95_ms": 203.00000000133878,
+      "render_threshold_status": "met",
+      "sample_count": 30,
+      "timer_max_gap_p95_ms": 61.99999999989814,
+      "valid_success_count": 30
+    }
+  },
+  "protocol_version": "m1-performance-v1",
+  "retest_required": false,
+  "startup": {
+    "max_ms": 5468.999999999141,
+    "p50_ms": 1421.9999999986612,
+    "p95_ms": 2265.9999999996217,
+    "sample_count": 20,
+    "threshold_status": "met",
+    "valid_success_count": 20
+  },
+  "threshold_conclusion": "met",
+  "tool_version": "m1-benchmark-tools-v1"
+}

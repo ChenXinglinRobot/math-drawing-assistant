@@ -1,8 +1,8 @@
 # 数学绘图助手：架构约束
 
 版本：v0.1  
-最后更新：2026-08-01
-状态：实施中的架构基线（阶段 11 正式 M1 单显函数 Scene 渲染链已通过；Clipboard、性能协议、M1 checkpoint 与阶段 12 尚未完成）
+最后更新：2026-08-02
+状态：实施中的架构基线（阶段 12 的 M1 单显函数复制与性能证据已通过总架构师独立审核）
 
 ## 1. 文档职责与事实来源
 
@@ -100,6 +100,12 @@ Engine 不访问网络、剪贴板、QSettings、真实凭据或 QWidget。除�
 `RecognitionWorker` 承载网络/OCR 生命周期；`RenderActor` 承载绘图生命周期。它们使用不同线程、不同取消标记和不同 request_id，不共享 Worker 实例。
 
 Worker/Actor 不修改 QWidget，不返回 `QWidget`、`QPixmap` 或 `QClipboard`，跨线程 Signal 使用明确结果类型，不传无结构 `dict`。
+
+### 4.6 阶段 12 复制边界
+
+阶段 12 的 `CopyCandidate` 与 `CopyPreparation` 是 Qt-free 的不可变快照。只有 `AppController` 已接纳的成功 `PlotSceneResult.png_bytes` 可以成为复制来源；UI 不得从 `QLabel`、`QPixmap`、截图或 preview 反取内容。`ClipboardService` 只在 GUI 主线程把该 PNG 解码为 `QImage` 后写入 `QClipboard`，并在 `setImage` 前建立内部写入上下文。
+
+源 PNG 的 SHA-256 与规范 RGBA8888 `QImage` 指纹承担不同语义，不能互相替代。复制临时反馈仅覆盖显示状态，结束后恢复 Controller 的真实 fresh/stale/error 状态；复制失败不得改变 revision、`TaskPhase`、旧成功结果或 preview。正式 benchmark 仅复用 runtime factory 与渲染链，不创建复制意图、不触发真实 `ClipboardService`，也不写真实剪贴板。
 
 ## 5. 不可变场景数据模型
 
@@ -360,7 +366,7 @@ MainWindow
 
 `shutdown(timeout_ms)` 只执行一次有上限的协作等待。等待成功后进入 `STOPPED`；等待失败后进入 `TIMED_OUT`，并把仍在运行的 QThread、worker 和 finish observer 放入同步的临时 keepalive 注册表，直到线程真的结束或后续 `shutdown` 重试成功。超时后的重复 `shutdown` 可以重试，并在成功后最终进入 `STOPPED`。该注册表只防止 `QThread: Destroyed while thread is still running`，不把失败改写为成功。
 
-当 `shutdown()` 返回 `False` 时，长生命周期调用者必须保留/重试 Actor；不得完成最终 UI 应用、`QApplication`、模块或进程退出。阶段 11 已将该退出门接入正式 `MainWindow.closeEvent` 与 bootstrap：`shutdown=False` 阻止退出并允许后续重试。该实现不包含 ClipboardService、QClipboard、目标软件粘贴验收、正式性能 P50/P95 协议或 M1 checkpoint；阶段 12 尚未开始。
+当 `shutdown()` 返回 `False` 时，长生命周期调用者必须保留/重试 Actor；不得完成最终 UI 应用、`QApplication`、模块或进程退出。阶段 11 已将该退出门接入正式 `MainWindow.closeEvent` 与 bootstrap：`shutdown=False` 阻止退出并允许后续重试。阶段 12 的复制边界、正式性能证据和有限 M1 checkpoint 已通过总架构师独立审核；不改变后续阶段的生命周期门禁。
 
 ## 9. 状态模型与 revision
 

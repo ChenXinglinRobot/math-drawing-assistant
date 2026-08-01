@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
-文档版本：stage-11-m1-scene-flow-v1
-状态：阶段 7、8A、8B、8C-1、8C-2、9A、9B、10 与 11 已通过。Agg renderer 与唯一 RenderActor 已实现；阶段 11 已将正式 M1 单显函数 UI → AppController → RenderActor → SceneRenderExecutor → Engine/Agg → GUI preview 链接入。ClipboardService、QClipboard 与 M1 checkpoint 仍未完成。
+文档版本：stage-12-m1-checkpoint-v1
+状态：阶段 7、8A、8B、8C-1、8C-2、9A、9B、10、11 与 12 已通过；阶段 12 的 ClipboardService、QClipboard、`m1-performance-v1` 正式结果和有限 M1 单显函数 checkpoint 已通过总架构师独立审核；公式语法契约未改变。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
@@ -707,3 +707,5 @@ NumericExecutionCost.max_live_float64_vectors
 3. 初始安全上限只有在冻结测量协议并取得基准证据后，才可改标为基准冻结；它们不是产品性能承诺。
 4. 不在 UI、模型、测试或其他文档建立第二套独立阈值或错误码表。
 5. 阶段 7 typed 验证成功只证明当前受限显函数语法安全形成；不表示已经具备数值函数、视口、采样、渲染、Scene Spec 或阶段 8 能力。
+6. 阶段 12 的 M1 checkpoint 只覆盖本文件已声明的单显函数语法，性能证据见 [`m1-performance-v1`](benchmarks/m1-performance-v1.md) 及其[正式结果摘要](benchmarks/m1-performance-v1-results.md)；八公式矩阵不扩大支持公式范围。
+7. Clipboard 实现不改变本文件的语法、白名单、错误码或 limits 契约。性能结论仅适用于 Windows 11 开发参考机，不外推为课堂设备结论；M1.5 尚未开始，且不进入阶段 13。

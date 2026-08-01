@@ -1,0 +1,32 @@
+{
+  "artifact_hashes": {
+    "benchmark_sha256": "47d6d39bdf8a95f62561c5e2f9feddbc5b8124d39e70520e37e53e8f360e8b84",
+    "protocol_sha256": "cce41d42be1ffbd328bde92fcd2a2194db81be873470fe777e8ebf0ba5f91f97",
+    "startup_probe_sha256": "3fb8c00abac7331fbef2f55d0639e098b2f31e0f70d016955c5899edf4348d64"
+  },
+  "batch_id": "20260801T151238Z-m1-performance-v1-primary",
+  "formal_measurement": true,
+  "invalid_batch": false,
+  "invalid_batch_reasons": [],
+  "protocol_version": "m1-performance-v1",
+  "render_schedule": {
+    "measurement_rounds": 30,
+    "measurement_samples": 240,
+    "seed": 20260801,
+    "warmup_rounds": 5,
+    "warmup_samples": 40
+  },
+  "result_file_sha256": {
+    "environment.json": "650634eaea72e0521916bc5146d74e70c0a74105fb8de49eccef4c5f05f9e7ee",
+    "protocol.sha256": "d9333aaca9089b5d4ee1c73969e6327e60edb102c28fba21ac0828ddaae5ac39",
+    "render-samples.jsonl": "ea578d222ec0833e278d702916eaaf05bec4e816b66fa76be1982a6e183a1a8c",
+    "startup-samples.jsonl": "a8b37c71e3dcea563db1155c2c85b59f821d124083884d3bd3b7ac926943b377",
+    "stderr.txt": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+    "stdout.txt": "ca7d7bc6d4ac53f47126a202a0ddf58a629f6f465c8608d20f3d147b6c6f3ea3",
+    "summary.json": "9f5d5530da7920db452cf733a22d11ee39cb7a9331af6c0ca8fbf76ecec975a2",
+    "tools.sha256": "75a5245aa4019b0842882b0b573a016f56e8280ddaf8f5f151b24963c1bcd7cb"
+  },
+  "retest_of": null,
+  "startup_command": "<project-python> -B <startup-probe>",
+  "tool_version": "m1-benchmark-tools-v1"
+}
