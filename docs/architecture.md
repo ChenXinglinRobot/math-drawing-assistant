@@ -265,9 +265,13 @@ tokenizer 只识别当前版本白名单内的数字、x/y、pi/E、函数、运
 
 ## 7. 分类型分类与采样
 
+M1.5 支持的图形、方程、精确系数、隐式乘法继承、M1 路由和拒绝边界以 [`m1.5-math-input-scope.md`](m1.5-math-input-scope.md) 为产品范围基线。本节只定义分类、Spec 和采样架构，不得自行扩大或收窄该范围。
+
 ### 7.1 显函数
 
 单独表达式、`y=rhs(x)`，以及等号一侧恰为 `y` 的 `lhs(x)=y` 可成为 `EXPLICIT_FUNCTION`。不做通用移项或 `solve()`；例如 `y+1=x+2` 不作为显函数快捷变换。
+
+现有 M1 专用 classifier/validator 和 `analyze_explicit_function` 保持原行为。阶段 13 的统一 M1/M1.5 路由位于其外层：等号一侧恰为 `y`、另一侧再次含 `y` 时不接受为显函数，但可继续进入有界一次/二次分类；例如统一路由把 `y=x+y` 形成 `LINE_EQUATION`，而 M1 专用入口仍返回既有 `explicit_function_y_not_allowed`。fallback 不调用 `solve()`，也不修改旧 validated receipt。
 
 显函数采样处理标量返回、定义域外点、NaN、无穷大、渐近线断线和密集振荡警告。密集振荡不得声称精确统计任意函数的“周期数”；阶段 8 应基于受预算采样序列定义可测代理指标，并把指标、阈值和验收样例写入 `docs/supported-formulas.md`。
 

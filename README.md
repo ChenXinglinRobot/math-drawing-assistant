@@ -9,6 +9,7 @@
 * [产品需求](数学绘图助手%20PRD.md)
 * [架构约束](docs/architecture.md)
 * [决策记录](docs/decisions.md)
+* [M1.5 首期数学与输入范围](docs/m1.5-math-input-scope.md)
 * [开发步骤清单](数学绘图助手_Codex协助开发步骤清单_v0.3.md)
 * [联网确认与外部验证](联网确认.md)
 

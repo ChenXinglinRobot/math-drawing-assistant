@@ -708,4 +708,23 @@ NumericExecutionCost.max_live_float64_vectors
 4. 不在 UI、模型、测试或其他文档建立第二套独立阈值或错误码表。
 5. 阶段 7 typed 验证成功只证明当前受限显函数语法安全形成；不表示已经具备数值函数、视口、采样、渲染、Scene Spec 或阶段 8 能力。
 6. 阶段 12 的 M1 checkpoint 只覆盖本文件已声明的单显函数语法，性能证据见 [`m1-performance-v1`](benchmarks/m1-performance-v1.md) 及其[正式结果摘要](benchmarks/m1-performance-v1-results.md)；八公式矩阵不扩大支持公式范围。
-7. Clipboard 实现不改变本文件的语法、白名单、错误码或 limits 契约。性能结论仅适用于 Windows 11 开发参考机，不外推为课堂设备结论；M1.5 尚未开始，且不进入阶段 13。
+7. Clipboard 实现不改变本文件的语法、白名单、错误码或 limits 契约。性能结论仅适用于 Windows 11 开发参考机，不外推为课堂设备结论；阶段 12 收口本身未进入阶段 13，后续入口范围见下节。
+
+## M1.5 阶段 13 入口范围
+
+M1.5 首期数学与输入范围已由项目所有者批准并冻结在 [`m1.5-math-input-scope.md`](m1.5-math-input-scope.md)，P0-05、P1-01 和 P1-02 的产品入口事项已关闭。该关闭不表示阶段 13 已实施；本文件以上各节仍是当前已实现并通过 M1 checkpoint 的语法、安全 limits 和显函数契约。
+
+阶段 13 必须在不修改既有 M1 专用入口、validator 和 validated receipt 合法/非法语义的前提下新增：
+
+* `LINE_EQUATION`、`CONIC_EQUATION` 与明确的 typed Spec；
+* 仅有理系数、总次数 1/2 的有界精确多项式提取；
+* 一般非退化直线和轴向平行非退化圆/圆锥曲线分类；
+* 退化、无实点、旋转、未知参数、变量分母、非多项式隐式方程及三次以上结构拒绝；
+* 现有三个隐式乘法邻接的继承，不扩大 tokenizer/parser 白名单；
+* M1 全量回归。
+
+统一 M1/M1.5 路由允许把安全、结构合法且能够形成受支持一般直线或圆锥曲线的单等式从 M1 阶段性拒绝升级为 M1.5 成功。除既有 `y+1=x+2` 外，`y=x+y`、`x+y=y` 和 `2*y=x+2*y` 均应在统一路由中形成 `LINE_EQUATION`；直接调用现有 `analyze_explicit_function` 时，`y=x+y` 和 `x+y=y` 仍保持 `explicit_function_y_not_allowed`。阶段 13 必须分别测试这两个入口，不得改写旧显函数 validator 来实现 fallback。
+
+变量负整数幂形成变量倒数结构，M1.5 拒绝；纯数字字面量幂不属于首期系数运算白名单，`x^2/3^2+y^2/2^2=1` 拒绝，而 `x^2/9+y^2/4=1` 接受。具体错误码和用户文案由阶段 13 冻结。
+
+阶段 14 的采样原型和 P0-06、阶段 15 的真实教材表达式与 P0-07 仍保持未关闭。M1.5 和核心 MVP 尚未完成。
