@@ -16,9 +16,80 @@ from math_drawing_assistant.models.errors import (
 from math_drawing_assistant.engine import SamplingWarningCode
 
 
+LEGACY_ERROR_CODE_VALUES = {
+    "INVALID_INPUT": "invalid_input",
+    "RENDER_FAILED": "render_failed",
+    "INVALID_REQUEST": "invalid_request",
+    "RESOURCE_LIMIT_EXCEEDED": "resource_limit_exceeded",
+    "INTERNAL_ERROR": "internal_error",
+    "EMPTY_INPUT": "empty_input",
+    "INPUT_TOO_LONG": "input_too_long",
+    "UNKNOWN_CHARACTER": "unknown_character",
+    "UNKNOWN_IDENTIFIER": "unknown_identifier",
+    "UNSUPPORTED_RELATION": "unsupported_relation",
+    "TOKEN_LIMIT_EXCEEDED": "token_limit_exceeded",
+    "NUMBER_TOO_LONG": "number_too_long",
+    "NESTING_TOO_DEEP": "nesting_too_deep",
+    "DELIMITER_MISMATCH": "delimiter_mismatch",
+    "ILLEGAL_TRAILING": "illegal_trailing",
+    "MULTIPLE_EQUALS": "multiple_equals",
+    "EQUATION_LEFT_EMPTY": "equation_left_empty",
+    "EQUATION_RIGHT_EMPTY": "equation_right_empty",
+    "PARSER_SYNTAX_ERROR": "parser_syntax_error",
+    "FUNCTION_CALL_REQUIRED": "function_call_required",
+    "FUNCTION_ARGUMENT_ERROR": "function_argument_error",
+    "LOG_REQUIRES_BASE": "log_requires_base",
+    "INVALID_LOG_BASE": "invalid_log_base",
+    "IMPLICIT_MULTIPLICATION_NOT_ALLOWED": (
+        "implicit_multiplication_not_allowed"
+    ),
+    "NESTED_ABSOLUTE_VALUE": "nested_absolute_value",
+    "AST_NODE_LIMIT_EXCEEDED": "ast_node_limit_exceeded",
+    "AST_DEPTH_LIMIT_EXCEEDED": "ast_depth_limit_exceeded",
+    "RATIONAL_LITERAL_TOO_LONG": "rational_literal_too_long",
+    "EXPONENT_OUT_OF_RANGE": "exponent_out_of_range",
+    "UNSUPPORTED_EXPONENT": "unsupported_exponent",
+    "INVALID_AST": "invalid_ast",
+    "EXPLICIT_FUNCTION_Y_NOT_ALLOWED": "explicit_function_y_not_allowed",
+    "UNSUPPORTED_EQUATION": "unsupported_equation",
+    "INVALID_VIEWPORT": "invalid_viewport",
+    "VIEWPORT_PROBE_BUDGET_EXCEEDED": "viewport_probe_budget_exceeded",
+    "NO_VISIBLE_CURVE": "no_visible_curve",
+}
+
+STAGE_13_ERROR_CODE_VALUES = {
+    "EQUATION_NON_RATIONAL_COEFFICIENT": (
+        "equation_non_rational_coefficient"
+    ),
+    "EQUATION_NON_POLYNOMIAL": "equation_non_polynomial",
+    "EQUATION_VARIABLE_DENOMINATOR": "equation_variable_denominator",
+    "EQUATION_ZERO_DENOMINATOR": "equation_zero_denominator",
+    "EQUATION_DEGREE_EXCEEDED": "equation_degree_exceeded",
+    "ROTATED_CONIC_NOT_SUPPORTED": "rotated_conic_not_supported",
+    "DEGENERATE_CONIC": "degenerate_conic",
+    "CONIC_HAS_NO_REAL_POINTS": "conic_has_no_real_points",
+}
+
+
 def test_existing_error_code_values_remain_stable() -> None:
-    assert ErrorCode.INVALID_INPUT.value == "invalid_input"
-    assert ErrorCode.RENDER_FAILED.value == "render_failed"
+    assert {
+        name: ErrorCode[name].value for name in LEGACY_ERROR_CODE_VALUES
+    } == LEGACY_ERROR_CODE_VALUES
+
+
+def test_stage_13_error_code_values_are_registered() -> None:
+    assert {
+        name: ErrorCode[name].value for name in STAGE_13_ERROR_CODE_VALUES
+    } == STAGE_13_ERROR_CODE_VALUES
+
+
+def test_stage_13_does_not_register_unapproved_error_codes() -> None:
+    values = {code.value for code in ErrorCode}
+
+    assert "equation_normalization_limit_exceeded" not in values
+    assert "variable_zero_exponent" not in values
+    assert ErrorCode.RESOURCE_LIMIT_EXCEEDED.value in values
+    assert ErrorCode.UNSUPPORTED_EQUATION.value in values
 
 
 def test_all_error_code_values_are_unique() -> None:

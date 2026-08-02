@@ -19,7 +19,7 @@ class LimitStatus(str, Enum):
     BENCHMARK_FROZEN = "benchmark_frozen"
 
 
-LIMITS_VERSION: Final[str] = "limits-v2-viewport-initial-safety"
+LIMITS_VERSION: Final[str] = "limits-v3-equation-normalization-initial-safety"
 
 
 def _require_integer(value: int, name: str) -> None:
@@ -58,6 +58,9 @@ class ApplicationLimits:
     max_decimal_places: int
     max_rational_numerator_digits: int
     max_rational_denominator_digits: int
+    max_equation_coefficient_numerator_digits: int
+    max_equation_coefficient_denominator_digits: int
+    max_equation_canonical_coefficient_digits: int
     max_absolute_exponent: int
     max_function_arguments: int
 
@@ -138,6 +141,59 @@ class ApplicationLimits:
         if self.max_branches_per_item > self.max_total_branches:
             raise ValueError(
                 "max_branches_per_item must not exceed max_total_branches.",
+            )
+        if (
+            self.max_equation_coefficient_numerator_digits
+            < self.max_rational_numerator_digits
+        ):
+            raise ValueError(
+                "max_equation_coefficient_numerator_digits must not be below "
+                "max_rational_numerator_digits.",
+            )
+        if (
+            self.max_equation_coefficient_denominator_digits
+            < self.max_rational_denominator_digits
+        ):
+            raise ValueError(
+                "max_equation_coefficient_denominator_digits must not be below "
+                "max_rational_denominator_digits.",
+            )
+        if (
+            self.max_equation_coefficient_numerator_digits
+            > self.max_input_characters
+        ):
+            raise ValueError(
+                "max_equation_coefficient_numerator_digits must not exceed "
+                "max_input_characters.",
+            )
+        if (
+            self.max_equation_coefficient_denominator_digits
+            > self.max_input_characters
+        ):
+            raise ValueError(
+                "max_equation_coefficient_denominator_digits must not exceed "
+                "max_input_characters.",
+            )
+        minimum_canonical_digits = max(
+            6 * self.max_equation_coefficient_denominator_digits,
+            self.max_equation_coefficient_numerator_digits
+            + 5 * self.max_equation_coefficient_denominator_digits,
+        )
+        if (
+            self.max_equation_canonical_coefficient_digits
+            < minimum_canonical_digits
+        ):
+            raise ValueError(
+                "max_equation_canonical_coefficient_digits must satisfy the "
+                "equation normalization lower bound.",
+            )
+        if (
+            self.max_equation_canonical_coefficient_digits
+            > 6 * self.max_input_characters
+        ):
+            raise ValueError(
+                "max_equation_canonical_coefficient_digits must not exceed "
+                "six times max_input_characters.",
             )
         if self.min_viewport_span > self.max_viewport_span:
             raise ValueError(
@@ -317,6 +373,9 @@ DEFAULT_LIMITS: Final[ApplicationLimits] = ApplicationLimits(
     max_decimal_places=64,
     max_rational_numerator_digits=128,
     max_rational_denominator_digits=128,
+    max_equation_coefficient_numerator_digits=128,
+    max_equation_coefficient_denominator_digits=128,
+    max_equation_canonical_coefficient_digits=768,
     max_absolute_exponent=1_000,
     max_function_arguments=8,
     max_scene_items=16,

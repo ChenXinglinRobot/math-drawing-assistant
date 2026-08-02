@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
-文档版本：stage-12-m1-checkpoint-v1
-状态：阶段 7、8A、8B、8C-1、8C-2、9A、9B、10、11 与 12 已通过；阶段 12 的 ClipboardService、QClipboard、`m1-performance-v1` 正式结果和有限 M1 单显函数 checkpoint 已通过总架构师独立审核；公式语法契约未改变。
+文档版本：stage-13a1-equation-contract-v1
+状态：阶段 12 checkpoint 已通过；阶段 13A-1 仅冻结 M1.5 变量零次幂拒绝、八个稳定错误码和三个 exact arithmetic limits 契约。阶段 13 的多项式归一化、分类、Spec 和统一路由尚未实现，M1.5 与核心 MVP 尚未完成。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
@@ -253,13 +253,15 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 
 配置类型：`ApplicationLimits`
 唯一默认实例：`DEFAULT_LIMITS`
-版本：`limits-v2-viewport-initial-safety`
+版本：`limits-v3-equation-normalization-initial-safety`
 状态：`initial_safety`；这些值是初始安全上限，不是性能承诺。若代码值变化，必须在同一变更同步本表和边界测试。
+
+阶段 13A-1 新增的三个 exact arithmetic limits 同样属于 `INITIAL_SAFETY`，不是性能或教材承诺。阶段 13A-1 完成后新签发的既有 M1 receipt，其 `limits_version` 会随 active limits 更新为 `limits-v3-equation-normalization-initial-safety`；这是集中配置契约的正常版本升级，不改变旧 M1 receipt 的结构、签发边界、校验逻辑或安全语义。
 
 <!-- LIMIT_FIELD_INDEX_START -->
 | 字段 | 语义 | 当前值 | 当前用途 |
 |---|---|---:|---|
-| `version` | 稳定 limits 契约版本 | `limits-v2-viewport-initial-safety` | 读取 |
+| `version` | 稳定 limits 契约版本 | `limits-v3-equation-normalization-initial-safety` | 读取；阶段 13A-1 冻结配置契约，不表示阶段 13 已完成 |
 | `status` | 初始安全或基准冻结状态 | `initial_safety` | 读取 |
 | `max_input_characters` | 原始输入最大字符数 | 4,096 | normalizer 在删除/展开前检查 |
 | `max_tokens` | 最大 token 数 | 1,024 | tokenizer 每次追加前检查 |
@@ -269,6 +271,9 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 | `max_decimal_places` | 最大小数位数 | 64 | tokenizer 数字扫描期间检查 |
 | `max_rational_numerator_digits` | 有理数分子最大位数 | 128 | 阶段 7 parser 字面量除法检查 |
 | `max_rational_denominator_digits` | 有理数分母最大位数 | 128 | 阶段 7 parser 字面量除法检查 |
+| `max_equation_coefficient_numerator_digits` | 阶段 13 多项式系数及精确几何 Fraction 分子的最大十进制位数 | 128 | 阶段 13A-1 初始安全配置契约；消费者尚未实现 |
+| `max_equation_coefficient_denominator_digits` | 阶段 13 多项式系数及精确几何 Fraction 分母的最大十进制位数 | 128 | 阶段 13A-1 初始安全配置契约；消费者尚未实现 |
+| `max_equation_canonical_coefficient_digits` | denominator clearing、LCM、canonicalization 中间整数及最终 primitive integer coefficient 的最大十进制位数 | 768 | 阶段 13A-1 初始安全配置契约；消费者尚未实现 |
 | `max_absolute_exponent` | 指数绝对值上限 | 1,000 | 阶段 7 parser 构造前检查 |
 | `max_function_arguments` | 单个函数最大参数数 | 8 | 阶段 7 parser 读取下一参数前检查 |
 | `max_scene_items` | 场景最大 item 数 | 16 | 阶段 8C-1 Builder 的 Scene 资源审批 |
@@ -345,6 +350,14 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 | `invalid_ast` | 防御性验证发现非封闭节点、名称或预算品牌 | 阶段 7 validator |
 | `explicit_function_y_not_allowed` | 显函数候选表达式包含 y | 阶段 7 classifier/validator |
 | `unsupported_equation` | 未形成直接显函数候选的方程形式当前不支持；不携带真实曲线类别判断 | 阶段 7 classifier |
+| `equation_non_rational_coefficient` | 方程系数不属于 M1.5 精确有理数范围 | 阶段 13A-1 注册；消费者待实现 |
+| `equation_non_polynomial` | 方程包含非多项式结构 | 阶段 13A-1 注册；消费者待实现 |
+| `equation_variable_denominator` | 变量出现在分母中 | 阶段 13A-1 注册；消费者待实现 |
+| `equation_zero_denominator` | 纯数值分母精确为零 | 阶段 13A-1 注册；消费者待实现 |
+| `equation_degree_exceeded` | 变量结构形成总次数超过 2 的项 | 阶段 13A-1 注册；消费者待实现 |
+| `rotated_conic_not_supported` | 最终精确 xy 系数非零 | 阶段 13A-1 注册；消费者待实现 |
+| `degenerate_conic` | 二次方程表示点、一条或两条直线等退化集合 | 阶段 13A-1 注册；消费者待实现 |
+| `conic_has_no_real_points` | 二次方程不存在可绘制的实数图形 | 阶段 13A-1 注册；消费者待实现 |
 | `invalid_viewport` | 视口请求的边界、顺序、跨度或坐标范围无效 | 阶段 8B resolver |
 | `viewport_probe_budget_exceeded` | 自动视口探测的独立预分配预算不足或获批分配失败 | 阶段 8B resolver |
 | `no_visible_curve` | 采样成功但当前视口没有可绘制曲线；内部 typed reason 区分无有限点、无可绘制段和视口外 | 阶段 8C-2 sampler |
@@ -728,3 +741,15 @@ M1.5 首期数学与输入范围已由项目所有者批准并冻结在 [`m1.5-m
 变量负整数幂形成变量倒数结构，M1.5 拒绝；纯数字字面量幂不属于首期系数运算白名单，`x^2/3^2+y^2/2^2=1` 拒绝，而 `x^2/9+y^2/4=1` 接受。具体错误码和用户文案由阶段 13 冻结。
 
 阶段 14 的采样原型和 P0-06、阶段 15 的真实教材表达式与 P0-07 仍保持未关闭。M1.5 和核心 MVP 尚未完成。
+
+## 阶段 13A-1 变量零次幂未来验收矩阵
+
+阶段 13A-1 只冻结以下 M1.5 方程分析契约；行为待阶段 13B-2/13D-3 实现，本步骤不修改 parser、既有 M1 显函数入口或 Engine 生产模块。
+
+| 输入 | 未来 M1.5 预期结果 | 实现状态 |
+|---|---|---|
+| `x^0+y=1` | `unsupported_equation` | 待阶段 13B-2/13D-3 实现 |
+| `(x+1)^0+y=2` | `unsupported_equation` | 待阶段 13B-2/13D-3 实现 |
+| `x^0+y^2=1` | `unsupported_equation` | 待阶段 13B-2/13D-3 实现 |
+
+`y=x^0` 和无等号表达式 `x^0` 继续完全服从既有 M1 契约；阶段 13A-1 不改变其行为。M1.5 变量零次幂不新增 `variable_zero_exponent`，仍复用 `unsupported_equation`；归一化资源超限不新增 `equation_normalization_limit_exceeded`，仍复用 `resource_limit_exceeded`。

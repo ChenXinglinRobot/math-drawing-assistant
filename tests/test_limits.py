@@ -48,6 +48,7 @@ def _scene_counts_at_limits() -> dict[str, int]:
 
 def test_default_limits_are_frozen_positive_and_versioned() -> None:
     assert DEFAULT_LIMITS.version == LIMITS_VERSION
+    assert LIMITS_VERSION == "limits-v3-equation-normalization-initial-safety"
     assert DEFAULT_LIMITS.status is LimitStatus.INITIAL_SAFETY
     assert DEFAULT_LIMITS.__dataclass_params__.frozen is True
     assert "__dict__" not in ApplicationLimits.__dict__
@@ -71,6 +72,133 @@ def test_default_limits_are_frozen_positive_and_versioned() -> None:
 
     with pytest.raises(FrozenInstanceError):
         DEFAULT_LIMITS.max_tokens = DEFAULT_LIMITS.max_tokens + 1  # type: ignore[misc]  # frozen contract probe
+
+
+def test_default_equation_normalization_limits_are_frozen() -> None:
+    assert DEFAULT_LIMITS.max_equation_coefficient_numerator_digits == 128
+    assert DEFAULT_LIMITS.max_equation_coefficient_denominator_digits == 128
+    assert DEFAULT_LIMITS.max_equation_canonical_coefficient_digits == 768
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "max_equation_coefficient_numerator_digits",
+        "max_equation_coefficient_denominator_digits",
+        "max_equation_canonical_coefficient_digits",
+    ],
+)
+@pytest.mark.parametrize(
+    ("value", "exception"),
+    [(True, TypeError), (0, ValueError), (-1, ValueError)],
+)
+def test_equation_normalization_limits_reject_invalid_scalar_values(
+    field_name: str,
+    value: int,
+    exception: type[Exception],
+) -> None:
+    with pytest.raises(exception, match=field_name):
+        replace(DEFAULT_LIMITS, **{field_name: value})
+
+
+@pytest.mark.parametrize(
+    ("changes", "field_name"),
+    [
+        (
+            {
+                "max_equation_coefficient_numerator_digits": (
+                    DEFAULT_LIMITS.max_rational_numerator_digits - 1
+                )
+            },
+            "max_equation_coefficient_numerator_digits",
+        ),
+        (
+            {
+                "max_equation_coefficient_denominator_digits": (
+                    DEFAULT_LIMITS.max_rational_denominator_digits - 1
+                )
+            },
+            "max_equation_coefficient_denominator_digits",
+        ),
+        (
+            {
+                "max_equation_coefficient_numerator_digits": (
+                    DEFAULT_LIMITS.max_input_characters + 1
+                )
+            },
+            "max_equation_coefficient_numerator_digits",
+        ),
+        (
+            {
+                "max_equation_coefficient_denominator_digits": (
+                    DEFAULT_LIMITS.max_input_characters + 1
+                )
+            },
+            "max_equation_coefficient_denominator_digits",
+        ),
+        (
+            {
+                "max_equation_canonical_coefficient_digits": max(
+                    6
+                    * DEFAULT_LIMITS.max_equation_coefficient_denominator_digits,
+                    DEFAULT_LIMITS.max_equation_coefficient_numerator_digits
+                    + 5
+                    * DEFAULT_LIMITS.max_equation_coefficient_denominator_digits,
+                )
+                - 1
+            },
+            "max_equation_canonical_coefficient_digits",
+        ),
+        (
+            {
+                "max_equation_canonical_coefficient_digits": (
+                    6 * DEFAULT_LIMITS.max_input_characters + 1
+                )
+            },
+            "max_equation_canonical_coefficient_digits",
+        ),
+    ],
+)
+def test_equation_normalization_limit_relationships_reject_out_of_range_values(
+    changes: dict[str, int],
+    field_name: str,
+) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        replace(DEFAULT_LIMITS, **changes)
+
+
+def test_equation_normalization_relationship_boundaries_are_inclusive() -> None:
+    lower_boundary = replace(
+        DEFAULT_LIMITS,
+        max_equation_coefficient_numerator_digits=(
+            DEFAULT_LIMITS.max_rational_numerator_digits
+        ),
+        max_equation_coefficient_denominator_digits=(
+            DEFAULT_LIMITS.max_rational_denominator_digits
+        ),
+        max_equation_canonical_coefficient_digits=max(
+            6 * DEFAULT_LIMITS.max_rational_denominator_digits,
+            DEFAULT_LIMITS.max_rational_numerator_digits
+            + 5 * DEFAULT_LIMITS.max_rational_denominator_digits,
+        ),
+    )
+    upper_boundary = replace(
+        DEFAULT_LIMITS,
+        max_equation_coefficient_numerator_digits=(
+            DEFAULT_LIMITS.max_input_characters
+        ),
+        max_equation_coefficient_denominator_digits=(
+            DEFAULT_LIMITS.max_input_characters
+        ),
+        max_equation_canonical_coefficient_digits=(
+            6 * DEFAULT_LIMITS.max_input_characters
+        ),
+    )
+
+    assert lower_boundary.max_equation_canonical_coefficient_digits == 768
+    assert upper_boundary.max_equation_canonical_coefficient_digits == (
+        6 * DEFAULT_LIMITS.max_input_characters
+    )
 
 
 def test_limit_relationships_are_validated_during_construction() -> None:
