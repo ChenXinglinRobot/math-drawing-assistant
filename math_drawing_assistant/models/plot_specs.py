@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+from fractions import Fraction
+from math import gcd
 from typing import Literal, Protocol, TypeAlias, runtime_checkable
 
 from math_drawing_assistant.models.errors import SourceSpan
@@ -241,6 +244,309 @@ class ExplicitFunctionSpec:
         """Return the only plot kind represented by this specification."""
 
         return PlotKind.EXPLICIT_FUNCTION
+
+
+@dataclass(frozen=True, slots=True)
+class PrimitiveEquationCoefficients:
+    """Primitive, sign-normalized coefficients for an equation equal to zero."""
+
+    a: int
+    b: int
+    c: int
+    d: int
+    e: int
+    f: int
+
+    def __post_init__(self) -> None:
+        values = (self.a, self.b, self.c, self.d, self.e, self.f)
+        if any(type(value) is not int for value in values):
+            raise TypeError("Equation coefficients must be exact integers.")
+        nonzero = tuple(value for value in values if value != 0)
+        if not nonzero:
+            raise ValueError("Equation coefficients must not all be zero.")
+        common_divisor = 0
+        for value in nonzero:
+            common_divisor = gcd(common_divisor, abs(value))
+        if common_divisor != 1:
+            raise ValueError("Equation coefficients must be primitive.")
+        if nonzero[0] < 0:
+            raise ValueError("The first nonzero equation coefficient must be positive.")
+
+
+@dataclass(frozen=True, slots=True)
+class EquationProvenance:
+    """Normalized and original source locations for a classified equation."""
+
+    normalized_input: str
+    normalized_span: SourceSpan
+    source_span: SourceSpan
+    limits_version: str
+
+    def __post_init__(self) -> None:
+        if type(self.normalized_input) is not str:
+            raise TypeError("normalized_input must be a string.")
+        if not self.normalized_input:
+            raise ValueError("normalized_input must not be empty.")
+        if type(self.normalized_span) is not SourceSpan:
+            raise TypeError("normalized_span must be a SourceSpan.")
+        if type(self.source_span) is not SourceSpan:
+            raise TypeError("source_span must be a SourceSpan.")
+        if self.normalized_span.start == self.normalized_span.end:
+            raise ValueError("normalized_span must not be empty.")
+        if self.source_span.start == self.source_span.end:
+            raise ValueError("source_span must not be empty.")
+        if self.normalized_span.end > len(self.normalized_input):
+            raise ValueError("normalized_span must fit normalized_input.")
+        if type(self.limits_version) is not str:
+            raise TypeError("limits_version must be a string.")
+        if not self.limits_version.strip():
+            raise ValueError("limits_version must not be blank.")
+
+
+class AxisOrientation(str, Enum):
+    """An axis aligned with one coordinate direction."""
+
+    HORIZONTAL = "horizontal"
+    VERTICAL = "vertical"
+
+
+class ParabolaOpening(str, Enum):
+    """The opening direction of an axis-aligned parabola."""
+
+    UP = "up"
+    DOWN = "down"
+    LEFT = "left"
+    RIGHT = "right"
+
+
+def _validate_equation_spec_common(
+    item_id: object,
+    coefficients: object,
+    provenance: object,
+) -> None:
+    if type(item_id) is not str or not item_id.strip():
+        raise ValueError("item_id must be a valid string.")
+    if type(coefficients) is not PrimitiveEquationCoefficients:
+        raise TypeError("coefficients must be PrimitiveEquationCoefficients.")
+    if type(provenance) is not EquationProvenance:
+        raise TypeError("provenance must be EquationProvenance.")
+
+
+def _require_fraction(value: object, field_name: str) -> Fraction:
+    if type(value) is not Fraction:
+        raise TypeError(f"{field_name} must be an exact Fraction.")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class LineSpec:
+    """A validated general line in canonical implicit form."""
+
+    item_id: str
+    coefficients: PrimitiveEquationCoefficients
+    provenance: EquationProvenance
+
+    def __post_init__(self) -> None:
+        _validate_equation_spec_common(
+            self.item_id,
+            self.coefficients,
+            self.provenance,
+        )
+        if any((self.coefficients.a, self.coefficients.b, self.coefficients.c)):
+            raise ValueError("LineSpec must not contain quadratic terms.")
+        if self.coefficients.d == 0 and self.coefficients.e == 0:
+            raise ValueError("LineSpec must contain a variable term.")
+
+    @property
+    def d(self) -> int:
+        return self.coefficients.d
+
+    @property
+    def e(self) -> int:
+        return self.coefficients.e
+
+    @property
+    def f(self) -> int:
+        return self.coefficients.f
+
+    @property
+    def plot_kind(self) -> PlotKind:
+        return PlotKind.LINE_EQUATION
+
+
+@dataclass(frozen=True, slots=True)
+class CircleSpec:
+    """A validated nondegenerate circle with exact geometry."""
+
+    item_id: str
+    coefficients: PrimitiveEquationCoefficients
+    provenance: EquationProvenance
+    center_x: Fraction
+    center_y: Fraction
+    radius_squared: Fraction
+
+    def __post_init__(self) -> None:
+        _validate_equation_spec_common(
+            self.item_id,
+            self.coefficients,
+            self.provenance,
+        )
+        _require_fraction(self.center_x, "center_x")
+        _require_fraction(self.center_y, "center_y")
+        radius_squared = _require_fraction(self.radius_squared, "radius_squared")
+        if self.coefficients.b != 0:
+            raise ValueError("CircleSpec must not contain an xy term.")
+        if self.coefficients.a != self.coefficients.c or self.coefficients.a <= 0:
+            raise ValueError("CircleSpec quadratic coefficients must be equal and positive.")
+        if radius_squared <= 0:
+            raise ValueError("radius_squared must be positive.")
+
+    @property
+    def plot_kind(self) -> PlotKind:
+        return PlotKind.CONIC_EQUATION
+
+
+@dataclass(frozen=True, slots=True)
+class EllipseSpec:
+    """A validated noncircular, axis-aligned ellipse with exact geometry."""
+
+    item_id: str
+    coefficients: PrimitiveEquationCoefficients
+    provenance: EquationProvenance
+    center_x: Fraction
+    center_y: Fraction
+    semi_axis_x_squared: Fraction
+    semi_axis_y_squared: Fraction
+    major_axis: AxisOrientation
+
+    def __post_init__(self) -> None:
+        _validate_equation_spec_common(
+            self.item_id,
+            self.coefficients,
+            self.provenance,
+        )
+        _require_fraction(self.center_x, "center_x")
+        _require_fraction(self.center_y, "center_y")
+        semi_x = _require_fraction(self.semi_axis_x_squared, "semi_axis_x_squared")
+        semi_y = _require_fraction(self.semi_axis_y_squared, "semi_axis_y_squared")
+        if type(self.major_axis) is not AxisOrientation:
+            raise TypeError("major_axis must be an AxisOrientation.")
+        if self.coefficients.b != 0:
+            raise ValueError("EllipseSpec must not contain an xy term.")
+        if self.coefficients.a <= 0 or self.coefficients.c <= 0:
+            raise ValueError("EllipseSpec quadratic coefficients must be positive.")
+        if self.coefficients.a == self.coefficients.c:
+            raise ValueError("A circle must use CircleSpec.")
+        if semi_x <= 0 or semi_y <= 0 or semi_x == semi_y:
+            raise ValueError("EllipseSpec semi-axis squares must be distinct and positive.")
+        expected_axis = (
+            AxisOrientation.HORIZONTAL if semi_x > semi_y else AxisOrientation.VERTICAL
+        )
+        if self.major_axis is not expected_axis:
+            raise ValueError("major_axis must identify the larger semi-axis.")
+
+    @property
+    def plot_kind(self) -> PlotKind:
+        return PlotKind.CONIC_EQUATION
+
+
+@dataclass(frozen=True, slots=True)
+class HyperbolaSpec:
+    """A validated axis-aligned hyperbola with exact geometry."""
+
+    item_id: str
+    coefficients: PrimitiveEquationCoefficients
+    provenance: EquationProvenance
+    center_x: Fraction
+    center_y: Fraction
+    semi_transverse_squared: Fraction
+    semi_conjugate_squared: Fraction
+    transverse_axis: AxisOrientation
+
+    def __post_init__(self) -> None:
+        _validate_equation_spec_common(
+            self.item_id,
+            self.coefficients,
+            self.provenance,
+        )
+        _require_fraction(self.center_x, "center_x")
+        _require_fraction(self.center_y, "center_y")
+        transverse = _require_fraction(
+            self.semi_transverse_squared,
+            "semi_transverse_squared",
+        )
+        conjugate = _require_fraction(
+            self.semi_conjugate_squared,
+            "semi_conjugate_squared",
+        )
+        if type(self.transverse_axis) is not AxisOrientation:
+            raise TypeError("transverse_axis must be an AxisOrientation.")
+        a = self.coefficients.a
+        c = self.coefficients.c
+        if self.coefficients.b != 0:
+            raise ValueError("HyperbolaSpec must not contain an xy term.")
+        if not ((a > 0 and c < 0) or (a < 0 and c > 0)):
+            raise ValueError("HyperbolaSpec quadratic coefficients must have opposite signs.")
+        if transverse <= 0 or conjugate <= 0:
+            raise ValueError("HyperbolaSpec axis squares must be positive.")
+
+    @property
+    def plot_kind(self) -> PlotKind:
+        return PlotKind.CONIC_EQUATION
+
+
+@dataclass(frozen=True, slots=True)
+class ParabolaSpec:
+    """A validated axis-aligned parabola with exact geometry."""
+
+    item_id: str
+    coefficients: PrimitiveEquationCoefficients
+    provenance: EquationProvenance
+    vertex_x: Fraction
+    vertex_y: Fraction
+    focal_parameter: Fraction
+    opening: ParabolaOpening
+
+    def __post_init__(self) -> None:
+        _validate_equation_spec_common(
+            self.item_id,
+            self.coefficients,
+            self.provenance,
+        )
+        _require_fraction(self.vertex_x, "vertex_x")
+        _require_fraction(self.vertex_y, "vertex_y")
+        focal_parameter = _require_fraction(
+            self.focal_parameter,
+            "focal_parameter",
+        )
+        if type(self.opening) is not ParabolaOpening:
+            raise TypeError("opening must be a ParabolaOpening.")
+        a = self.coefficients.a
+        c = self.coefficients.c
+        if self.coefficients.b != 0:
+            raise ValueError("ParabolaSpec must not contain an xy term.")
+        if (a == 0) == (c == 0):
+            raise ValueError("ParabolaSpec must contain exactly one squared variable.")
+        if focal_parameter == 0:
+            raise ValueError("focal_parameter must not be zero.")
+        if a != 0:
+            expected = (
+                ParabolaOpening.UP
+                if focal_parameter > 0
+                else ParabolaOpening.DOWN
+            )
+        else:
+            expected = (
+                ParabolaOpening.RIGHT
+                if focal_parameter > 0
+                else ParabolaOpening.LEFT
+            )
+        if self.opening is not expected:
+            raise ValueError("opening must match the squared variable and focal parameter.")
+
+    @property
+    def plot_kind(self) -> PlotKind:
+        return PlotKind.CONIC_EQUATION
 
 
 @runtime_checkable
