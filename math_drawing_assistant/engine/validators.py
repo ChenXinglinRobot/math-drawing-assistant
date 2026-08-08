@@ -120,6 +120,36 @@ def analyze_explicit_function(
     )
 
 
+def _issue_validated_explicit_expression(
+    validation: ExplicitValidation,
+    normalized_input: NormalizedInput,
+    *,
+    limits: ApplicationLimits = DEFAULT_LIMITS,
+) -> ValidatedExplicitExpression:
+    """Issue the existing explicit receipt from an already shared front end."""
+
+    if type(validation) is not ExplicitValidation:
+        raise TypeError("validation must be an exact ExplicitValidation.")
+    if type(normalized_input) is not NormalizedInput:
+        raise TypeError("normalized_input must be an exact NormalizedInput.")
+    if not isinstance(limits, ApplicationLimits):
+        raise TypeError("limits must be an ApplicationLimits value.")
+
+    contract = _issue_validated_expression_contract(
+        parser_limits_version=validation.candidate.metrics.limits_version,
+        active_limits_version=limits.version,
+    )
+    return _create_validated_explicit_expression(
+        expression=validation.candidate.expression,
+        normalized_input=normalized_input.text,
+        normalized_span=validation.candidate.normalized_span,
+        source_span=validation.candidate.source_span,
+        source_form=validation.candidate.source_form,
+        free_variables=validation.free_variables,
+        contract=contract,
+    )
+
+
 def validate_explicit_candidate(
     candidate: ExplicitFunctionCandidate,
     *,
