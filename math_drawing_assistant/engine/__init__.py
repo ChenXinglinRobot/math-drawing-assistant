@@ -1,4 +1,4 @@
-"""Public Engine contracts available through stage 11A."""
+"""Public Engine contracts available through stage 13."""
 
 from math_drawing_assistant.engine.equation_splitter import (
     EquationInput,
@@ -49,6 +49,7 @@ from math_drawing_assistant.engine.plot_classifier import (
     ExplicitFunctionCandidate,
     classify_plot,
 )
+from math_drawing_assistant.engine.plot_analyzer import analyze_plot_item
 from math_drawing_assistant.engine.source_map import SourceMap
 from math_drawing_assistant.engine.spec_builder import (
     build_explicit_function_spec,
@@ -109,6 +110,7 @@ __all__ = [
     "TokenKind",
     "ViewportResolution",
     "analyze_explicit_function",
+    "analyze_plot_item",
     "build_explicit_function_spec",
     "build_explicit_scene_spec",
     "build_single_explicit_render_plan",

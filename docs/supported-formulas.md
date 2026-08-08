@@ -1,43 +1,44 @@
 # 支持公式与横切契约
 
-文档版本：stage-13a1-equation-contract-v1
-状态：阶段 12 checkpoint 已通过；阶段 13A-1 仅冻结 M1.5 变量零次幂拒绝、八个稳定错误码和三个 exact arithmetic limits 契约。阶段 13 的多项式归一化、分类、Spec 和统一路由尚未实现，M1.5 与核心 MVP 尚未完成。
+文档版本：stage-13-equation-analysis-v1
+状态：阶段 13A 至 13E 已完成。M1.5 已提供单项 request-level equation analysis、五种 typed equation Specs 与既有 M1 显函数入口的兼容行为；尚未接入 `SceneRenderExecutor`、viewport、sampling、render 或 UI。阶段 14/15 和核心 MVP 仍未完成。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
 
-当前仓库正式生产调用图的统一入口是 `analyze_explicit_function`，执行以下数据流：
+当前仓库保留两个正式、职责不同的单项分析入口。
+
+既有 M1 专用入口保持不变：
 
 ```text
-原始用户文本
-→ normalize_input
-→ NormalizedInput(text, SourceMap)
-→ tokenize
-→ tuple[Token, ...]
-→ split_equation
-→ ExpressionInput | EquationInput
-→ parse_input
-→ 项目自有 RestrictedExpression AST
-→ classify_plot
-→ validate_explicit_candidate
-→ ValidatedExplicitExpression
+input_text
+→ analyze_explicit_function
+→ ValidatedExplicitExpression | ErrorInfo
 ```
 
-阶段 6 的四个模块仍只负责规范化、词法化、SourceMap 和等号拆分，既有语义未改变。阶段 7 不导入或调用 SymPy，不执行数值求值、常量折叠、化简、展开、移项、求解、采样、视口或渲染。`ValidatedExplicitExpression` 是尚未注入 `item_id` 的阶段 7 中间安全产物，不是可直接渲染的 `PlotItemSpec`；后续阶段必须结合调用者持有的 `PlotItemRequest.item_id` 创建正式 Spec。
+它仍只处理既有 M1 显函数语义；其正常返回是尚未注入 `item_id` 的 `ValidatedExplicitExpression`，不是可直接渲染的 `PlotItemSpec`。
 
-独立的 parser、classifier 和 validator typed 接口仍公开用于组合与单元测试。正式调用链不得用 parser 或 classifier 的成功结果绕过 validator 构造后续 Spec。`ValidatedExplicitExpression` 的普通公共构造会明确拒绝；正式入口在 validator 成功后签发 parser/active limits 版本一致的内部 contract，再通过 model-owned 工厂重查整棵 AST、自由变量和 span 后构造结果。这是当前正式调用图和公开构造不变量，不宣称 Python 层具有密码学意义上的绝对私有性。
+阶段 13 的正式 request-level 入口是 `analyze_plot_item`：
 
-阶段 8A 增加以下唯一单项生产衔接，不重新运行 parser，也不接受原始文本、普通 AST、SymPy 表达式或 callable：
 
 ```text
-PlotItemRequest + ValidatedExplicitExpression
-→ build_explicit_function_spec
-→ ExplicitFunctionSpec
-→ build_explicit_scene_spec
-→ PlotSceneSpec(items=(spec,))
+PlotItemRequest
+→ analyze_plot_item
+→ 一次 normalize / tokenize / split / parse
+→ classify_plot_route
+  → ExplicitFunctionCandidate
+    → 既有显函数 validation
+    → ValidatedExplicitExpression
+    → ExplicitFunctionSpec
+  → EquationCandidate
+    → sealed equation validation
+    → bounded exact polynomial canonicalization
+    → exact geometry classification
+    → LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec
+→ PlotItemSpec | ErrorInfo
 ```
 
-`item_id` 只来自 `PlotItemRequest`；数学表达式及其 normalized/source spans、source form、free variables 和 limits version 只来自 `ValidatedExplicitExpression`。请求中的 `AUTO` 或 `EXPLICIT_FUNCTION` 可进入该显函数衔接，其他 PlotKind 拒绝。Scene tuple 顺序是权威顺序，`display_order` 不复制进 Spec。
+`analyze_plot_item` 是阶段 13 的正式单项分析边界：它不生成 `PlotSceneSpec`，不计算 viewport，也不执行 sampling 或 render。`SceneRenderExecutor` 继续只承载既有 M1 下游行为；equation Spec 的后续数值、采样与渲染能力属于尚未完成的阶段 14/15。阶段 6/7 的规范化、词法化、SourceMap、AST 和既有显函数 validation 语义不变，也不导入 SymPy 或执行数值求值、常量折叠、化简、展开、移项或求解。
 
 ## 字符与 token 白名单
 
@@ -256,12 +257,12 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 版本：`limits-v3-equation-normalization-initial-safety`
 状态：`initial_safety`；这些值是初始安全上限，不是性能承诺。若代码值变化，必须在同一变更同步本表和边界测试。
 
-阶段 13A-1 新增的三个 exact arithmetic limits 同样属于 `INITIAL_SAFETY`，不是性能或教材承诺。阶段 13A-1 完成后新签发的既有 M1 receipt，其 `limits_version` 会随 active limits 更新为 `limits-v3-equation-normalization-initial-safety`；这是集中配置契约的正常版本升级，不改变旧 M1 receipt 的结构、签发边界、校验逻辑或安全语义。
+三个 equation exact arithmetic limits 同样属于 `INITIAL_SAFETY`，不是性能或教材承诺。它们现在由 bounded exact rational、polynomial canonicalization 和 geometry classifier 消费；`analyze_plot_item` 会将对应 resource failure 映射为 `resource_limit_exceeded`。这些限制不表示阶段 14 sampling/render 已完成，也不改变既有 M1 receipt 的结构、签发边界、校验逻辑或安全语义。
 
 <!-- LIMIT_FIELD_INDEX_START -->
 | 字段 | 语义 | 当前值 | 当前用途 |
 |---|---|---:|---|
-| `version` | 稳定 limits 契约版本 | `limits-v3-equation-normalization-initial-safety` | 读取；阶段 13A-1 冻结配置契约，不表示阶段 13 已完成 |
+| `version` | 稳定 limits 契约版本 | `limits-v3-equation-normalization-initial-safety` | 读取；阶段 13 已完成，不表示阶段 14/15 已完成 |
 | `status` | 初始安全或基准冻结状态 | `initial_safety` | 读取 |
 | `max_input_characters` | 原始输入最大字符数 | 4,096 | normalizer 在删除/展开前检查 |
 | `max_tokens` | 最大 token 数 | 1,024 | tokenizer 每次追加前检查 |
@@ -271,9 +272,9 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 | `max_decimal_places` | 最大小数位数 | 64 | tokenizer 数字扫描期间检查 |
 | `max_rational_numerator_digits` | 有理数分子最大位数 | 128 | 阶段 7 parser 字面量除法检查 |
 | `max_rational_denominator_digits` | 有理数分母最大位数 | 128 | 阶段 7 parser 字面量除法检查 |
-| `max_equation_coefficient_numerator_digits` | 阶段 13 多项式系数及精确几何 Fraction 分子的最大十进制位数 | 128 | 阶段 13A-1 初始安全配置契约；消费者尚未实现 |
-| `max_equation_coefficient_denominator_digits` | 阶段 13 多项式系数及精确几何 Fraction 分母的最大十进制位数 | 128 | 阶段 13A-1 初始安全配置契约；消费者尚未实现 |
-| `max_equation_canonical_coefficient_digits` | denominator clearing、LCM、canonicalization 中间整数及最终 primitive integer coefficient 的最大十进制位数 | 768 | 阶段 13A-1 初始安全配置契约；消费者尚未实现 |
+| `max_equation_coefficient_numerator_digits` | 阶段 13 多项式系数及精确几何 Fraction 分子的最大十进制位数 | 128 | bounded exact rational、polynomial canonicalization 与 geometry classifier |
+| `max_equation_coefficient_denominator_digits` | 阶段 13 多项式系数及精确几何 Fraction 分母的最大十进制位数 | 128 | bounded exact rational、polynomial canonicalization 与 geometry classifier |
+| `max_equation_canonical_coefficient_digits` | denominator clearing、LCM、canonicalization 中间整数及最终 primitive integer coefficient 的最大十进制位数 | 768 | polynomial canonicalization 与 geometry classifier |
 | `max_absolute_exponent` | 指数绝对值上限 | 1,000 | 阶段 7 parser 构造前检查 |
 | `max_function_arguments` | 单个函数最大参数数 | 8 | 阶段 7 parser 读取下一参数前检查 |
 | `max_scene_items` | 场景最大 item 数 | 16 | 阶段 8C-1 Builder 的 Scene 资源审批 |
@@ -349,15 +350,15 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 | `unsupported_exponent` | 小数、变量或复合指数不在当前窄契约 | 阶段 7 parser/validator |
 | `invalid_ast` | 防御性验证发现非封闭节点、名称或预算品牌 | 阶段 7 validator |
 | `explicit_function_y_not_allowed` | 显函数候选表达式包含 y | 阶段 7 classifier/validator |
-| `unsupported_equation` | 未形成直接显函数候选的方程形式当前不支持；不携带真实曲线类别判断 | 阶段 7 classifier |
-| `equation_non_rational_coefficient` | 方程系数不属于 M1.5 精确有理数范围 | 阶段 13A-1 注册；消费者待实现 |
-| `equation_non_polynomial` | 方程包含非多项式结构 | 阶段 13A-1 注册；消费者待实现 |
-| `equation_variable_denominator` | 变量出现在分母中 | 阶段 13A-1 注册；消费者待实现 |
-| `equation_zero_denominator` | 纯数值分母精确为零 | 阶段 13A-1 注册；消费者待实现 |
-| `equation_degree_exceeded` | 变量结构形成总次数超过 2 的项 | 阶段 13A-1 注册；消费者待实现 |
-| `rotated_conic_not_supported` | 最终精确 xy 系数非零 | 阶段 13A-1 注册；消费者待实现 |
-| `degenerate_conic` | 二次方程表示点、一条或两条直线等退化集合 | 阶段 13A-1 注册；消费者待实现 |
-| `conic_has_no_real_points` | 二次方程不存在可绘制的实数图形 | 阶段 13A-1 注册；消费者待实现 |
+| `unsupported_equation` | M1 非直接显函数的阶段性拒绝；M1.5 的零/常量方程、被冻结的变量零次幂，以及当前未支持的 equation structure 也使用该值 | 阶段 7 classifier / 阶段 13 polynomial normalizer |
+| `equation_non_rational_coefficient` | 方程系数不属于 M1.5 精确有理数范围 | 阶段 13B-2 polynomial normalizer / 阶段 13D-3 `analyze_plot_item` |
+| `equation_non_polynomial` | 方程包含非多项式结构 | 阶段 13B-2 polynomial normalizer / 阶段 13D-3 `analyze_plot_item` |
+| `equation_variable_denominator` | 变量出现在分母中 | 阶段 13B-2 polynomial normalizer / 阶段 13D-3 `analyze_plot_item` |
+| `equation_zero_denominator` | 纯数值分母精确为零 | 阶段 13B-2 polynomial normalizer / 阶段 13D-3 `analyze_plot_item` |
+| `equation_degree_exceeded` | 变量结构形成总次数超过 2 的项 | 阶段 13B-2 polynomial normalizer / 阶段 13D-3 `analyze_plot_item` |
+| `rotated_conic_not_supported` | 最终精确 xy 系数非零 | 阶段 13C geometry classifier / 阶段 13D-3 `analyze_plot_item` |
+| `degenerate_conic` | 二次方程表示点、一条或两条直线等退化集合 | 阶段 13C geometry classifier / 阶段 13D-3 `analyze_plot_item` |
+| `conic_has_no_real_points` | 二次方程不存在可绘制的实数图形 | 阶段 13C geometry classifier / 阶段 13D-3 `analyze_plot_item` |
 | `invalid_viewport` | 视口请求的边界、顺序、跨度或坐标范围无效 | 阶段 8B resolver |
 | `viewport_probe_budget_exceeded` | 自动视口探测的独立预分配预算不足或获批分配失败 | 阶段 8B resolver |
 | `no_visible_curve` | 采样成功但当前视口没有可绘制曲线；内部 typed reason 区分无有限点、无可绘制段和视口外 | 阶段 8C-2 sampler |
@@ -723,33 +724,43 @@ NumericExecutionCost.max_live_float64_vectors
 6. 阶段 12 的 M1 checkpoint 只覆盖本文件已声明的单显函数语法，性能证据见 [`m1-performance-v1`](benchmarks/m1-performance-v1.md) 及其[正式结果摘要](benchmarks/m1-performance-v1-results.md)；八公式矩阵不扩大支持公式范围。
 7. Clipboard 实现不改变本文件的语法、白名单、错误码或 limits 契约。性能结论仅适用于 Windows 11 开发参考机，不外推为课堂设备结论；阶段 12 收口本身未进入阶段 13，后续入口范围见下节。
 
-## M1.5 阶段 13 入口范围
+## M1.5 阶段 13 已实现范围
 
-M1.5 首期数学与输入范围已由项目所有者批准并冻结在 [`m1.5-math-input-scope.md`](m1.5-math-input-scope.md)，P0-05、P1-01 和 P1-02 的产品入口事项已关闭。该关闭不表示阶段 13 已实施；本文件以上各节仍是当前已实现并通过 M1 checkpoint 的语法、安全 limits 和显函数契约。
+<!-- STAGE_13_STATUS_START -->
+阶段 13A 至 13E 已完成。`analyze_plot_item` 是 M1.5 正式的单项 request-level 分析入口；既有 `analyze_explicit_function`、`classify_plot` 和 `ValidatedExplicitExpression` 保持兼容。阶段 13 不生成 `PlotSceneSpec`，也未接入 `SceneRenderExecutor`、viewport、sampling、render 或 UI；阶段 14/15 仍未完成，核心 MVP 也未因阶段 13 而完成。
+<!-- STAGE_13_STATUS_END -->
 
-阶段 13 必须在不修改既有 M1 专用入口、validator 和 validated receipt 合法/非法语义的前提下新增：
+当前实现接受仅含有理系数、总次数为 1 或 2 的方程，并以 bounded exact arithmetic 归一化为 primitive integer coefficients。它通过 typed `PlotKind` 路由交付下列非退化 Spec：一般直线 `LineSpec`，以及轴向平行的 `CircleSpec`、`EllipseSpec`、`HyperbolaSpec` 和 `ParabolaSpec`。
 
-* `LINE_EQUATION`、`CONIC_EQUATION` 与明确的 typed Spec；
-* 仅有理系数、总次数 1/2 的有界精确多项式提取；
-* 一般非退化直线和轴向平行非退化圆/圆锥曲线分类；
-* 退化、无实点、旋转、未知参数、变量分母、非多项式隐式方程及三次以上结构拒绝；
-* 现有三个隐式乘法邻接的继承，不扩大 tokenizer/parser 白名单；
-* M1 全量回归。
+当前实现拒绝旋转圆锥曲线、退化圆锥曲线、无实点圆锥曲线、变量分母、非多项式结构、非有理系数、三次及以上结构、零/常量方程、被冻结的变量零次幂，以及超过 exact arithmetic limits 的输入。纯数字幂仍不属于 equation coefficient arithmetic 白名单；tokenizer/parser 白名单没有扩大。
 
-统一 M1/M1.5 路由允许把安全、结构合法且能够形成受支持一般直线或圆锥曲线的单等式从 M1 阶段性拒绝升级为 M1.5 成功。除既有 `y+1=x+2` 外，`y=x+y`、`x+y=y` 和 `2*y=x+2*y` 均应在统一路由中形成 `LINE_EQUATION`；直接调用现有 `analyze_explicit_function` 时，`y=x+y` 和 `x+y=y` 仍保持 `explicit_function_y_not_allowed`。阶段 13 必须分别测试这两个入口，不得改写旧显函数 validator 来实现 fallback。
+`y=x+y`、`x+y=y` 和 `2*y=x+2*y` 在 `analyze_plot_item` 的 equation route 中可成为 `LineSpec`；直接调用 `analyze_explicit_function` 时，`y=x+y` 和 `x+y=y` 仍返回 `explicit_function_y_not_allowed`。requested kind 不会重新解释 typed route；违法、安全超限与数学错误优先于 requested-kind mismatch。
 
-变量负整数幂形成变量倒数结构，M1.5 拒绝；纯数字字面量幂不属于首期系数运算白名单，`x^2/3^2+y^2/2^2=1` 拒绝，而 `x^2/9+y^2/4=1` 接受。具体错误码和用户文案由阶段 13 冻结。
+<!-- STAGE_13_REQUESTED_KIND_MATRIX_START -->
+| 输入 | `AUTO` | `EXPLICIT_FUNCTION` | `LINE_EQUATION` | `CONIC_EQUATION` |
+|---|---|---|---|---|
+| `y=2*x+1` | `ExplicitFunctionSpec` | `ExplicitFunctionSpec` | `invalid_request` | `invalid_request` |
+| `x=y` | `ExplicitFunctionSpec` | `ExplicitFunctionSpec` | `invalid_request` | `invalid_request` |
+| `x=2` | `LineSpec` | `unsupported_equation` | `LineSpec` | `invalid_request` |
+| `x+y=1` | `LineSpec` | `unsupported_equation` | `LineSpec` | `invalid_request` |
+| `x^2+y^2=25` | `CircleSpec` | `unsupported_equation` | `invalid_request` | `CircleSpec` |
+| `x^2=4*y` | `ParabolaSpec` | `unsupported_equation` | `invalid_request` | `ParabolaSpec` |
+| `y=x+y` | `LineSpec` | `explicit_function_y_not_allowed` | `LineSpec` | `invalid_request` |
+<!-- STAGE_13_REQUESTED_KIND_MATRIX_END -->
 
-阶段 14 的采样原型和 P0-06、阶段 15 的真实教材表达式与 P0-07 仍保持未关闭。M1.5 和核心 MVP 尚未完成。
+## 阶段 13 变量零次幂与重叠错误裁定
 
-## 阶段 13A-1 变量零次幂未来验收矩阵
+<!-- STAGE_13_X0_ERROR_PRECEDENCE_START -->
+| 输入 | 当前结果 |
+|---|---|
+| `x^0+y=1` | `unsupported_equation`（已实现） |
+| `(x+1)^0+y=2` | `unsupported_equation`（已实现） |
+| `x^0+y^2=1` | `unsupported_equation`（已实现） |
+| `y=x^0` | 保持既有 M1 显函数成功 |
+| 无等号 `x^0` | 保持既有 M1 显函数成功 |
+| `x^3/(x-1)=0` | `equation_degree_exceeded` |
+| `x^2/(x-1)=0` | `equation_variable_denominator` |
+| `1/(x^3)=0` | `equation_degree_exceeded` |
+<!-- STAGE_13_X0_ERROR_PRECEDENCE_END -->
 
-阶段 13A-1 只冻结以下 M1.5 方程分析契约；行为待阶段 13B-2/13D-3 实现，本步骤不修改 parser、既有 M1 显函数入口或 Engine 生产模块。
-
-| 输入 | 未来 M1.5 预期结果 | 实现状态 |
-|---|---|---|
-| `x^0+y=1` | `unsupported_equation` | 待阶段 13B-2/13D-3 实现 |
-| `(x+1)^0+y=2` | `unsupported_equation` | 待阶段 13B-2/13D-3 实现 |
-| `x^0+y^2=1` | `unsupported_equation` | 待阶段 13B-2/13D-3 实现 |
-
-`y=x^0` 和无等号表达式 `x^0` 继续完全服从既有 M1 契约；阶段 13A-1 不改变其行为。M1.5 变量零次幂不新增 `variable_zero_exponent`，仍复用 `unsupported_equation`；归一化资源超限不新增 `equation_normalization_limit_exceeded`，仍复用 `resource_limit_exceeded`。
+变量零次幂不新增 `variable_zero_exponent`，exact arithmetic 资源超限不新增 `equation_normalization_limit_exceeded`，仍分别使用 `unsupported_equation` 与 `resource_limit_exceeded`。当多个非法结构重叠时，bounded polynomial traversal 按既有子节点访问顺序立即传播错误；这只决定先报告哪个错误，不改变输入被拒绝的事实。阶段 13E 不修改该 traversal。

@@ -1,12 +1,21 @@
-"""Public immutable model contracts available through stage 7."""
+"""Public immutable model contracts available through stage 13."""
 
 from math_drawing_assistant.models.diagnostics import StageTiming
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo, SourceSpan
 from math_drawing_assistant.models.plot_specs import (
+    AxisOrientation,
+    CircleSpec,
+    EllipseSpec,
+    EquationProvenance,
     ExplicitFunctionSpec,
     ExplicitExpressionSource,
+    HyperbolaSpec,
+    LineSpec,
+    ParabolaOpening,
+    ParabolaSpec,
     PlotItemSpec,
     PlotSceneSpec,
+    PrimitiveEquationCoefficients,
     ValidatedExplicitExpression,
 )
 from math_drawing_assistant.models.restricted_ast import (
@@ -47,8 +56,12 @@ from math_drawing_assistant.models.viewport import ResolvedViewport, ViewportReq
 
 __all__ = [
     "AspectRequest",
+    "AxisOrientation",
+    "CircleSpec",
+    "EllipseSpec",
     "ErrorCode",
     "ErrorInfo",
+    "EquationProvenance",
     "ExplicitFunctionSpec",
     "ExplicitExpressionSource",
     "ExplicitRenderItemPlan",
@@ -60,6 +73,10 @@ __all__ = [
     "FunctionCallNode",
     "FunctionName",
     "InputSource",
+    "HyperbolaSpec",
+    "LineSpec",
+    "ParabolaOpening",
+    "ParabolaSpec",
     "PlotItemRequest",
     "PlotItemResult",
     "PlotItemSpec",
@@ -67,6 +84,7 @@ __all__ = [
     "PlotSceneRequest",
     "PlotSceneResult",
     "PlotSceneSpec",
+    "PrimitiveEquationCoefficients",
     "NumberNode",
     "DEFAULT_EXPLICIT_SAMPLING_POLICY",
     "RENDER_PLAN_CONTRACT_VERSION",
