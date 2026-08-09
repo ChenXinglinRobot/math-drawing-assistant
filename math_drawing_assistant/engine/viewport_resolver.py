@@ -21,11 +21,17 @@ from math_drawing_assistant.models.errors import (
     ViewportWarningCode,
 )
 from math_drawing_assistant.models.plot_specs import (
+    CircleSpec,
+    EllipseSpec,
     ExplicitFunctionSpec,
+    HyperbolaSpec,
+    LineSpec,
+    ParabolaSpec,
     PlotSceneSpec,
 )
 from math_drawing_assistant.models.state import (
     AspectRequest,
+    ResolvedAspect,
     ViewportMode,
     ViewportSource,
 )
@@ -53,13 +59,23 @@ class ViewportResolution:
             raise ValueError("ViewportResolution errors cannot carry warnings.")
 
 
-def resolve_single_explicit_viewport(
+_GEOMETRY_SPEC_TYPES = (
+    LineSpec,
+    CircleSpec,
+    EllipseSpec,
+    HyperbolaSpec,
+    ParabolaSpec,
+)
+_SINGLE_ITEM_SPEC_TYPES = (ExplicitFunctionSpec, *_GEOMETRY_SPEC_TYPES)
+
+
+def resolve_single_item_viewport(
     scene_spec: PlotSceneSpec,
     viewport_request: ViewportRequest,
     *,
     limits: ApplicationLimits = DEFAULT_LIMITS,
 ) -> ViewportResolution:
-    """Resolve one validated explicit-function scene without building a render plan."""
+    """Resolve one exact Stage 13 item without building a render plan."""
 
     limits_error = _validate_limits(limits)
     if limits_error is not None:
@@ -74,10 +90,34 @@ def resolve_single_explicit_viewport(
     if isinstance(request_or_error, ErrorInfo):
         return _failure(request_or_error)
     request = request_or_error
+    aspect = _resolved_aspect(spec, request.aspect_request)
 
     if request.mode is ViewportMode.MANUAL:
-        return _resolve_manual(request, limits=limits)
-    return _resolve_auto(spec, request, limits=limits)
+        return _resolve_manual(request, aspect=aspect, limits=limits)
+    if type(spec) is ExplicitFunctionSpec:
+        return _resolve_auto(spec, request, aspect=aspect, limits=limits)
+    return _failure(
+        _contract_error(
+            "viewport_strategy",
+            "automatic geometry viewport strategy is not implemented in stage 14B-1",
+            item_id=spec.item_id,
+        ),
+    )
+
+
+def resolve_single_explicit_viewport(
+    scene_spec: PlotSceneSpec,
+    viewport_request: ViewportRequest,
+    *,
+    limits: ApplicationLimits = DEFAULT_LIMITS,
+) -> ViewportResolution:
+    """Compatibility wrapper for the unified single-item viewport resolver."""
+
+    return resolve_single_item_viewport(
+        scene_spec,
+        viewport_request,
+        limits=limits,
+    )
 
 
 def _validate_limits(limits: object) -> ErrorInfo | None:
@@ -94,23 +134,41 @@ def _validated_single_spec(
     scene_spec: object,
     *,
     limits: ApplicationLimits,
-) -> ExplicitFunctionSpec | ErrorInfo:
+) -> (
+    ExplicitFunctionSpec
+    | LineSpec
+    | CircleSpec
+    | EllipseSpec
+    | HyperbolaSpec
+    | ParabolaSpec
+    | ErrorInfo
+):
     if type(scene_spec) is not PlotSceneSpec:
         return _invalid_request("scene_spec", "resolver requires an exact PlotSceneSpec")
     if len(scene_spec.items) != 1:
         return _invalid_request("scene_spec", "resolver requires exactly one scene item")
     spec = scene_spec.items[0]
-    if type(spec) is not ExplicitFunctionSpec:
+    if type(spec) not in _SINGLE_ITEM_SPEC_TYPES:
         return _invalid_request(
             "scene_spec",
-            "resolver requires one ExplicitFunctionSpec item",
+            "resolver requires one exact supported Stage 13 item",
         )
     try:
         scene_spec.__post_init__()
         spec.__post_init__()
+        if type(spec) is not ExplicitFunctionSpec:
+            spec.coefficients.__post_init__()
+            spec.provenance.__post_init__()
+            spec.provenance.normalized_span.__post_init__()
+            spec.provenance.source_span.__post_init__()
     except (AttributeError, TypeError, ValueError):
         return _contract_error("scene_spec", "single-item scene contract mismatch")
-    if spec.limits_version != limits.version:
+    spec_limits_version = (
+        spec.limits_version
+        if type(spec) is ExplicitFunctionSpec
+        else spec.provenance.limits_version
+    )
+    if spec_limits_version != limits.version:
         return _contract_error("scene_spec", "spec limits version is not active")
     return spec
 
@@ -136,9 +194,25 @@ def _validated_request(viewport_request: object) -> ViewportRequest | ErrorInfo:
     return viewport_request
 
 
+def _resolved_aspect(
+    spec: ExplicitFunctionSpec | LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec,
+    request: AspectRequest,
+) -> ResolvedAspect:
+    if request is AspectRequest.AUTO:
+        return ResolvedAspect.AUTO
+    if request is AspectRequest.EQUAL:
+        return ResolvedAspect.EQUAL
+    if request is not AspectRequest.DEFAULT:
+        raise ValueError("aspect request is not published")
+    if type(spec) in {ExplicitFunctionSpec, LineSpec}:
+        return ResolvedAspect.AUTO
+    return ResolvedAspect.EQUAL
+
+
 def _resolve_manual(
     request: ViewportRequest,
     *,
+    aspect: ResolvedAspect,
     limits: ApplicationLimits,
 ) -> ViewportResolution:
     bounds_or_error = _request_bounds(request, limits=limits)
@@ -150,7 +224,7 @@ def _resolve_manual(
         x_max,
         y_min,
         y_max,
-        request.aspect_request,
+        aspect,
         ViewportSource.MANUAL,
         limits=limits,
     )
@@ -163,6 +237,7 @@ def _resolve_auto(
     spec: ExplicitFunctionSpec,
     request: ViewportRequest,
     *,
+    aspect: ResolvedAspect,
     limits: ApplicationLimits,
 ) -> ViewportResolution:
     if request.y_min is not None or request.y_max is not None:
@@ -241,6 +316,7 @@ def _resolve_auto(
     if isinstance(y_bounds_or_reason, str):
         return _fallback_resolution(
             request,
+            aspect=aspect,
             x_min=x_min,
             x_max=x_max,
             uses_default_x=uses_default_x,
@@ -255,13 +331,14 @@ def _resolve_auto(
         x_max,
         y_min,
         y_max,
-        request.aspect_request,
+        aspect,
         ViewportSource.AUTO_PROBE,
         limits=limits,
     )
     if isinstance(resolved_or_error, ErrorInfo):
         return _fallback_resolution(
             request,
+            aspect=aspect,
             x_min=x_min,
             x_max=x_max,
             uses_default_x=uses_default_x,
@@ -472,6 +549,7 @@ def _minimum_span_range(
 def _fallback_resolution(
     request: ViewportRequest,
     *,
+    aspect: ResolvedAspect,
     x_min: float,
     x_max: float,
     uses_default_x: bool,
@@ -490,7 +568,7 @@ def _fallback_resolution(
         fallback_x_max,
         float(limits.fallback_auto_y_min),
         float(limits.fallback_auto_y_max),
-        request.aspect_request,
+        aspect,
         ViewportSource.AUTO_FALLBACK,
         limits=limits,
     )
@@ -512,7 +590,7 @@ def _resolved_viewport(
     x_max: float,
     y_min: float,
     y_max: float,
-    aspect: AspectRequest,
+    aspect: ResolvedAspect,
     source: ViewportSource,
     *,
     limits: ApplicationLimits,
@@ -560,11 +638,17 @@ def _invalid_viewport(field_name: str, technical_message: str) -> ErrorInfo:
     )
 
 
-def _contract_error(field_name: str, technical_message: str) -> ErrorInfo:
+def _contract_error(
+    field_name: str,
+    technical_message: str,
+    *,
+    item_id: str | None = None,
+) -> ErrorInfo:
     return ErrorInfo(
         code=ErrorCode.INTERNAL_ERROR,
         user_message="The viewport resolution contract is invalid.",
         technical_message=technical_message,
+        item_id=item_id,
         field_name=field_name,
         recoverable=False,
     )
@@ -572,5 +656,6 @@ def _contract_error(field_name: str, technical_message: str) -> ErrorInfo:
 
 __all__ = [
     "ViewportResolution",
+    "resolve_single_item_viewport",
     "resolve_single_explicit_viewport",
 ]

@@ -1,18 +1,26 @@
-"""Immutable, budgeted render-plan contracts for stage 8C-1.
-
-The approval receipt is a Python-level capability boundary, not cryptographic
-privacy.  Future samplers must validate it before accepting a plan.
-"""
+"""Immutable, budgeted render-plan contracts with typed approval receipts."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Final
+from enum import Enum
+from fractions import Fraction
+from math import isfinite
+from typing import Final, TypeAlias
 
 from math_drawing_assistant.models.errors import SourceSpan
 from math_drawing_assistant.models.plot_specs import (
+    AxisOrientation,
+    CircleSpec,
+    EllipseSpec,
+    EquationProvenance,
     ExplicitFunctionSpec,
+    HyperbolaSpec,
+    LineSpec,
+    ParabolaOpening,
+    ParabolaSpec,
     PlotSceneSpec,
+    PrimitiveEquationCoefficients,
     ValidatedExplicitExpression,
 )
 from math_drawing_assistant.models.restricted_ast import (
@@ -24,10 +32,15 @@ from math_drawing_assistant.models.restricted_ast import (
     SymbolNode,
     UnaryOpNode,
 )
+from math_drawing_assistant.models.state import ResolvedAspect, ViewportSource
 from math_drawing_assistant.models.viewport import ResolvedViewport
 
 
-RENDER_PLAN_CONTRACT_VERSION: Final[str] = "render-plan-v1-budgeted-explicit"
+RENDER_PLAN_CONTRACT_VERSION: Final[str] = "render-plan-v2-typed-geometry"
+PARAMETERIZED_SAMPLER_CONTRACT_VERSION: Final[str] = "parameterized-sampler-v1"
+_EXPECTED_NUMERIC_EXECUTOR_CONTRACT_VERSION: Final[str] = (
+    "numeric-executor-v1-postorder-float64"
+)
 _APPROVAL_SEAL = object()
 
 
@@ -39,9 +52,25 @@ def _positive_int(value: object, name: str) -> int:
     return value
 
 
+def _nonnegative_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer.")
+    if value < 0:
+        raise ValueError(f"{name} must not be negative.")
+    return value
+
+
 def _nonempty_version(value: object, name: str) -> str:
     if type(value) is not str or not value.strip():
         raise ValueError(f"{name} must be a non-empty string.")
+    return value
+
+
+def _finite_float(value: object, name: str) -> float:
+    if type(value) is not float:
+        raise TypeError(f"{name} must be an exact float.")
+    if not isfinite(value):
+        raise ValueError(f"{name} must be finite.")
     return value
 
 
@@ -86,9 +115,69 @@ DEFAULT_EXPLICIT_SAMPLING_POLICY: Final[ExplicitSamplingPolicy] = (
 )
 
 
+class SegmentClosure(str, Enum):
+    """Whether a parameterized segment is mathematically open or closed."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+@dataclass(frozen=True, slots=True)
+class LineSegmentPlan:
+    """Two distinct finite endpoints for one general-line drawable segment."""
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+    def __post_init__(self) -> None:
+        for name in ("x0", "y0", "x1", "y1"):
+            _finite_float(getattr(self, name), name)
+        if self.x0 == self.x1 and self.y0 == self.y1:
+            raise ValueError("line segment endpoints must be distinct.")
+
+    @property
+    def mathematical_branch_id(self) -> int:
+        return 0
+
+    @property
+    def sample_count(self) -> int:
+        return 2
+
+    @property
+    def closure(self) -> SegmentClosure:
+        return SegmentClosure.OPEN
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterIntervalPlan:
+    """One finite, ordered parameter interval for a mathematical branch."""
+
+    mathematical_branch_id: int
+    parameter_start: float
+    parameter_stop: float
+    sample_count: int
+    closure: SegmentClosure
+
+    def __post_init__(self) -> None:
+        _nonnegative_int(self.mathematical_branch_id, "mathematical_branch_id")
+        _finite_float(self.parameter_start, "parameter_start")
+        _finite_float(self.parameter_stop, "parameter_stop")
+        if self.parameter_start >= self.parameter_stop:
+            raise ValueError("parameter_start must be below parameter_stop.")
+        if _positive_int(self.sample_count, "sample_count") < 2:
+            raise ValueError("each parameter interval needs at least two samples.")
+        if type(self.closure) is not SegmentClosure:
+            raise TypeError("closure must be an exact SegmentClosure.")
+
+
+GeometrySegmentPlan: TypeAlias = LineSegmentPlan | ParameterIntervalPlan
+
+
 @dataclass(frozen=True, slots=True)
 class ExplicitRenderItemPlan:
-    """Scalar execution bounds for the one supported explicit-function item."""
+    """Scalar execution bounds for one explicit-function item."""
 
     item_id: str
     sample_count: int
@@ -111,14 +200,54 @@ class ExplicitRenderItemPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class GeometryRenderItemPlan:
+    """Closed union of typed drawable segments for one exact geometry item."""
+
+    item_id: str
+    mathematical_branch_count: int
+    segments: tuple[GeometrySegmentPlan, ...]
+    sample_count: int
+    batch_size: int
+    max_segment_count: int
+
+    def __post_init__(self) -> None:
+        if type(self.item_id) is not str or not self.item_id.strip():
+            raise ValueError("item_id must be a non-empty string.")
+        _positive_int(self.mathematical_branch_count, "mathematical_branch_count")
+        for name in ("sample_count", "batch_size", "max_segment_count"):
+            _positive_int(getattr(self, name), name)
+        if type(self.segments) is not tuple or not self.segments:
+            raise TypeError("segments must be a non-empty exact tuple.")
+        segment_types = {type(segment) for segment in self.segments}
+        if not segment_types.issubset({LineSegmentPlan, ParameterIntervalPlan}):
+            raise TypeError("segments contain an unsupported exact segment type.")
+        if len(segment_types) != 1:
+            raise TypeError("line and parameter interval segments must not be mixed.")
+        for segment in self.segments:
+            segment.__post_init__()
+            if segment.mathematical_branch_id >= self.mathematical_branch_count:
+                raise ValueError("segment branch id is outside the declared branch count.")
+        if self.sample_count != sum(segment.sample_count for segment in self.segments):
+            raise ValueError("sample_count must equal the sum of segment samples.")
+        if len(self.segments) > self.max_segment_count:
+            raise ValueError("segment count exceeds max_segment_count.")
+        if self.batch_size > self.sample_count:
+            raise ValueError("batch_size must not exceed sample_count.")
+
+
+RenderItemPlan: TypeAlias = ExplicitRenderItemPlan | GeometryRenderItemPlan
+
+
+@dataclass(frozen=True, slots=True)
 class RenderMemoryBudget:
-    """Named upper-bound components; this is not a Python/NumPy RSS estimate."""
+    """Named explicit-function upper-bound components."""
 
     final_x_bytes: int
     final_y_bytes: int
     artist_data_bytes: int
     validity_mask_bytes: int
     segment_index_range_bytes: int
+    segment_metadata_bytes: int
     executor_extra_batch_bytes: int
     rgba_canvas_bytes: int
     png_buffer_reserve_bytes: int
@@ -131,16 +260,13 @@ class RenderMemoryBudget:
             "artist_data_bytes",
             "validity_mask_bytes",
             "segment_index_range_bytes",
+            "segment_metadata_bytes",
             "executor_extra_batch_bytes",
             "rgba_canvas_bytes",
             "png_buffer_reserve_bytes",
             "png_copy_bytes",
         ):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise TypeError(f"{name} must be an integer.")
-            if value < 0:
-                raise ValueError(f"{name} must not be negative.")
+            _nonnegative_int(getattr(self, name), name)
         if self.artist_data_bytes != self.final_x_bytes + self.final_y_bytes:
             raise ValueError("artist_data_bytes must equal final x plus final y bytes.")
         if self.png_copy_bytes != self.png_buffer_reserve_bytes:
@@ -148,38 +274,97 @@ class RenderMemoryBudget:
 
     @property
     def fixed_bytes(self) -> int:
-        """Return all components that do not vary with a chosen batch size."""
-
         return (
             self.final_x_bytes
             + self.final_y_bytes
             + self.artist_data_bytes
             + self.validity_mask_bytes
             + self.segment_index_range_bytes
+            + self.segment_metadata_bytes
             + self.rgba_canvas_bytes
             + self.png_buffer_reserve_bytes
             + self.png_copy_bytes
         )
 
     @property
-    def total_bytes(self) -> int:
-        """Return the conservative project-buffer upper bound."""
+    def batch_bytes(self) -> int:
+        return self.executor_extra_batch_bytes
 
-        return self.fixed_bytes + self.executor_extra_batch_bytes
+    @property
+    def total_bytes(self) -> int:
+        return self.fixed_bytes + self.batch_bytes
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterizedRenderMemoryBudget:
+    """Named parameterized-sampling upper-bound components."""
+
+    final_x_bytes: int
+    final_y_bytes: int
+    artist_data_bytes: int
+    segment_index_range_bytes: int
+    segment_metadata_bytes: int
+    parameter_batch_bytes: int
+    transcendental_workspace_bytes: int
+    validation_workspace_bytes: int
+    rgba_canvas_bytes: int
+    png_buffer_reserve_bytes: int
+    png_copy_bytes: int
+
+    def __post_init__(self) -> None:
+        for name in (
+            "final_x_bytes",
+            "final_y_bytes",
+            "artist_data_bytes",
+            "segment_index_range_bytes",
+            "segment_metadata_bytes",
+            "parameter_batch_bytes",
+            "transcendental_workspace_bytes",
+            "validation_workspace_bytes",
+            "rgba_canvas_bytes",
+            "png_buffer_reserve_bytes",
+            "png_copy_bytes",
+        ):
+            _nonnegative_int(getattr(self, name), name)
+        if self.artist_data_bytes != self.final_x_bytes + self.final_y_bytes:
+            raise ValueError("artist_data_bytes must equal final x plus final y bytes.")
+        if self.png_copy_bytes != self.png_buffer_reserve_bytes:
+            raise ValueError("png_copy_bytes must equal the PNG buffer reserve.")
+
+    @property
+    def fixed_bytes(self) -> int:
+        return (
+            self.final_x_bytes
+            + self.final_y_bytes
+            + self.artist_data_bytes
+            + self.segment_index_range_bytes
+            + self.segment_metadata_bytes
+            + self.rgba_canvas_bytes
+            + self.png_buffer_reserve_bytes
+            + self.png_copy_bytes
+        )
+
+    @property
+    def batch_bytes(self) -> int:
+        return (
+            self.parameter_batch_bytes
+            + self.transcendental_workspace_bytes
+            + self.validation_workspace_bytes
+        )
+
+    @property
+    def total_bytes(self) -> int:
+        return self.fixed_bytes + self.batch_bytes
 
 
 @dataclass(frozen=True, slots=True)
 class _SourceSpanSnapshot:
-    """Independent source-location values used by approval snapshots."""
-
     start: int
     end: int
 
 
 @dataclass(frozen=True, slots=True)
 class _RestrictedExpressionSnapshot:
-    """Recursive, project-owned AST semantics without retaining AST nodes."""
-
     node_kind: str
     normalized_span: _SourceSpanSnapshot
     source_span: _SourceSpanSnapshot
@@ -189,8 +374,6 @@ class _RestrictedExpressionSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class _ValidatedExpressionSnapshot:
-    """Stable public semantics of one parser-issued validated expression."""
-
     expression: _RestrictedExpressionSnapshot
     normalized_input: str
     normalized_span: _SourceSpanSnapshot
@@ -202,16 +385,46 @@ class _ValidatedExpressionSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class _ExplicitFunctionSpecSnapshot:
-    """Exact supported scene-item type, identity, and execution semantics."""
-
     item_id: str
     validated_expression: _ValidatedExpressionSnapshot
 
 
 @dataclass(frozen=True, slots=True)
-class _ResolvedViewportSnapshot:
-    """Independent resolved-viewport output values."""
+class _PrimitiveEquationCoefficientsSnapshot:
+    a: int
+    b: int
+    c: int
+    d: int
+    e: int
+    f: int
 
+
+@dataclass(frozen=True, slots=True)
+class _EquationProvenanceSnapshot:
+    normalized_input: str
+    normalized_span: _SourceSpanSnapshot
+    source_span: _SourceSpanSnapshot
+    limits_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class _FractionSnapshot:
+    numerator: int
+    denominator: int
+
+
+@dataclass(frozen=True, slots=True)
+class _GeometrySpecSnapshot:
+    spec_type: str
+    item_id: str
+    coefficients: _PrimitiveEquationCoefficientsSnapshot
+    provenance: _EquationProvenanceSnapshot
+    fraction_fields: tuple[tuple[str, _FractionSnapshot], ...]
+    enum_fields: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedViewportSnapshot:
     x_min: float
     x_max: float
     y_min: float
@@ -222,8 +435,6 @@ class _ResolvedViewportSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class _ExplicitRenderItemPlanSnapshot:
-    """Independent scalar execution-plan values."""
-
     item_id: str
     sample_count: int
     batch_size: int
@@ -232,14 +443,48 @@ class _ExplicitRenderItemPlanSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class _RenderMemoryBudgetSnapshot:
-    """Independent values for every named approved memory component."""
+class _LineSegmentPlanSnapshot:
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    mathematical_branch_id: int
+    sample_count: int
+    closure: str
 
+
+@dataclass(frozen=True, slots=True)
+class _ParameterIntervalPlanSnapshot:
+    mathematical_branch_id: int
+    parameter_start: float
+    parameter_stop: float
+    sample_count: int
+    closure: str
+
+
+_GeometrySegmentPlanSnapshot: TypeAlias = (
+    _LineSegmentPlanSnapshot | _ParameterIntervalPlanSnapshot
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _GeometryRenderItemPlanSnapshot:
+    item_id: str
+    mathematical_branch_count: int
+    segments: tuple[_GeometrySegmentPlanSnapshot, ...]
+    sample_count: int
+    batch_size: int
+    max_segment_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderMemoryBudgetSnapshot:
     final_x_bytes: int
     final_y_bytes: int
     artist_data_bytes: int
     validity_mask_bytes: int
     segment_index_range_bytes: int
+    segment_metadata_bytes: int
     executor_extra_batch_bytes: int
     rgba_canvas_bytes: int
     png_buffer_reserve_bytes: int
@@ -247,9 +492,22 @@ class _RenderMemoryBudgetSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class _RenderPlanApprovalSnapshot:
-    """Complete independent value snapshot bound into an approval receipt."""
+class _ParameterizedRenderMemoryBudgetSnapshot:
+    final_x_bytes: int
+    final_y_bytes: int
+    artist_data_bytes: int
+    segment_index_range_bytes: int
+    segment_metadata_bytes: int
+    parameter_batch_bytes: int
+    transcendental_workspace_bytes: int
+    validation_workspace_bytes: int
+    rgba_canvas_bytes: int
+    png_buffer_reserve_bytes: int
+    png_copy_bytes: int
 
+
+@dataclass(frozen=True, slots=True)
+class _ExplicitRenderPlanApprovalSnapshot:
     scene_items: tuple[_ExplicitFunctionSpecSnapshot, ...]
     resolved_viewport: _ResolvedViewportSnapshot
     image_width: int
@@ -261,36 +519,50 @@ class _RenderPlanApprovalSnapshot:
     limits_version: str
     sampling_policy_version: str | None
     numeric_executor_contract_version: str | None
+    parameterized_sampler_contract_version: str | None
     item_plan: _ExplicitRenderItemPlanSnapshot
     memory_budget: _RenderMemoryBudgetSnapshot
 
 
+# Private compatibility alias used by the existing explicit sampler provenance tests.
+_RenderPlanApprovalSnapshot = _ExplicitRenderPlanApprovalSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class _GeometryRenderPlanApprovalSnapshot:
+    scene_items: tuple[_GeometrySpecSnapshot, ...]
+    resolved_viewport: _ResolvedViewportSnapshot
+    image_width: int
+    image_height: int
+    dpi: int
+    show_grid: bool
+    show_legend: bool
+    plan_version: str
+    limits_version: str
+    sampling_policy_version: str | None
+    numeric_executor_contract_version: str | None
+    parameterized_sampler_contract_version: str | None
+    item_plan: _GeometryRenderItemPlanSnapshot
+    memory_budget: _ParameterizedRenderMemoryBudgetSnapshot
+
+
+_ApprovedRenderPlanSnapshot: TypeAlias = (
+    _ExplicitRenderPlanApprovalSnapshot | _GeometryRenderPlanApprovalSnapshot
+)
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class _RenderPlanApprovalReceipt:
-    """Internal typed receipt issued only after the formal budget succeeds."""
-
-    approved_snapshot: _RenderPlanApprovalSnapshot
+    approved_snapshot: _ApprovedRenderPlanSnapshot
     _seal: object = field(repr=False)
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         raise TypeError("Render-plan approval receipts are issued internally.")
 
 
-def _issue_approval_receipt(plan: "RenderPlan") -> _RenderPlanApprovalReceipt:
-    if plan.item_plan is None or plan.memory_budget is None:
-        raise ValueError("Only complete render plans can receive approval.")
-    receipt = object.__new__(_RenderPlanApprovalReceipt)
-    for name, value in (
-        ("approved_snapshot", _approval_snapshot_from_plan(plan)),
-        ("_seal", _APPROVAL_SEAL),
-    ):
-        object.__setattr__(receipt, name, value)
-    return receipt
-
-
 @dataclass(frozen=True, slots=True)
 class RenderPlan:
-    """A final render snapshot; ordinary construction creates an unapproved plan."""
+    """A final render snapshot; ordinary construction remains unapproved."""
 
     scene_spec: PlotSceneSpec
     resolved_viewport: ResolvedViewport
@@ -303,8 +575,9 @@ class RenderPlan:
     show_legend: bool = False
     sampling_policy_version: str | None = None
     numeric_executor_contract_version: str | None = None
-    item_plan: ExplicitRenderItemPlan | None = None
-    memory_budget: RenderMemoryBudget | None = None
+    parameterized_sampler_contract_version: str | None = None
+    item_plan: RenderItemPlan | None = None
+    memory_budget: RenderMemoryBudget | ParameterizedRenderMemoryBudget | None = None
     _approval_receipt: _RenderPlanApprovalReceipt | None = field(
         default=None,
         init=False,
@@ -327,71 +600,182 @@ class RenderPlan:
         for name in (
             "sampling_policy_version",
             "numeric_executor_contract_version",
+            "parameterized_sampler_contract_version",
         ):
             value = getattr(self, name)
             if value is not None:
                 _nonempty_version(value, name)
-        if self.item_plan is not None and type(self.item_plan) is not ExplicitRenderItemPlan:
-            raise TypeError("item_plan must be an ExplicitRenderItemPlan or None.")
-        if self.memory_budget is not None and type(self.memory_budget) is not RenderMemoryBudget:
-            raise TypeError("memory_budget must be a RenderMemoryBudget or None.")
+        if self.item_plan is not None and type(self.item_plan) not in {
+            ExplicitRenderItemPlan,
+            GeometryRenderItemPlan,
+        }:
+            raise TypeError("item_plan must be an exact RenderItemPlan member or None.")
+        if self.memory_budget is not None and type(self.memory_budget) not in {
+            RenderMemoryBudget,
+            ParameterizedRenderMemoryBudget,
+        }:
+            raise TypeError("memory_budget must be an exact render memory member or None.")
 
 
-def _approval_snapshot_from_plan(plan: RenderPlan) -> _RenderPlanApprovalSnapshot:
-    """Capture every public plan field that affects execution or output semantics."""
+def _issue_approval_receipt(plan: RenderPlan) -> _RenderPlanApprovalReceipt:
+    _validate_cross_plan_contracts(plan)
+    receipt = object.__new__(_RenderPlanApprovalReceipt)
+    object.__setattr__(receipt, "approved_snapshot", _approval_snapshot_from_plan(plan))
+    object.__setattr__(receipt, "_seal", _APPROVAL_SEAL)
+    return receipt
 
+
+def _approval_snapshot_from_plan(plan: RenderPlan) -> _ApprovedRenderPlanSnapshot:
     if type(plan.scene_spec) is not PlotSceneSpec:
         raise TypeError("scene_spec must be an exact PlotSceneSpec.")
-    if type(plan.scene_spec.items) is not tuple:
-        raise TypeError("scene_spec.items must be a tuple.")
-    scene_items = tuple(_snapshot_explicit_spec(item) for item in plan.scene_spec.items)
+    if type(plan.scene_spec.items) is not tuple or len(plan.scene_spec.items) != 1:
+        raise TypeError("approved scene items must be an exact single-item tuple.")
     viewport = plan.resolved_viewport
     if type(viewport) is not ResolvedViewport:
         raise TypeError("resolved_viewport must be an exact ResolvedViewport.")
-    item_plan = plan.item_plan
-    if type(item_plan) is not ExplicitRenderItemPlan:
-        raise TypeError("item_plan must be an exact ExplicitRenderItemPlan.")
-    memory_budget = plan.memory_budget
-    if type(memory_budget) is not RenderMemoryBudget:
-        raise TypeError("memory_budget must be an exact RenderMemoryBudget.")
+    viewport_snapshot = _ResolvedViewportSnapshot(
+        x_min=viewport.x_min,
+        x_max=viewport.x_max,
+        y_min=viewport.y_min,
+        y_max=viewport.y_max,
+        aspect=viewport.aspect.value,
+        source=viewport.source.value,
+    )
+    item = plan.scene_spec.items[0]
+    if type(item) is ExplicitFunctionSpec:
+        item_plan = plan.item_plan
+        memory = plan.memory_budget
+        if type(item_plan) is not ExplicitRenderItemPlan:
+            raise TypeError("explicit item plan must be exact.")
+        if type(memory) is not RenderMemoryBudget:
+            raise TypeError("explicit memory budget must be exact.")
+        return _ExplicitRenderPlanApprovalSnapshot(
+            scene_items=(_snapshot_explicit_spec(item),),
+            resolved_viewport=viewport_snapshot,
+            image_width=plan.image_width,
+            image_height=plan.image_height,
+            dpi=plan.dpi,
+            show_grid=plan.show_grid,
+            show_legend=plan.show_legend,
+            plan_version=plan.plan_version,
+            limits_version=plan.limits_version,
+            sampling_policy_version=plan.sampling_policy_version,
+            numeric_executor_contract_version=plan.numeric_executor_contract_version,
+            parameterized_sampler_contract_version=(
+                plan.parameterized_sampler_contract_version
+            ),
+            item_plan=_snapshot_explicit_item_plan(item_plan),
+            memory_budget=_snapshot_explicit_memory(memory),
+        )
+    if type(item) in {LineSpec, CircleSpec, EllipseSpec, HyperbolaSpec, ParabolaSpec}:
+        item_plan = plan.item_plan
+        memory = plan.memory_budget
+        if type(item_plan) is not GeometryRenderItemPlan:
+            raise TypeError("geometry item plan must be exact.")
+        if type(memory) is not ParameterizedRenderMemoryBudget:
+            raise TypeError("parameterized memory budget must be exact.")
+        return _GeometryRenderPlanApprovalSnapshot(
+            scene_items=(_snapshot_geometry_spec(item),),
+            resolved_viewport=viewport_snapshot,
+            image_width=plan.image_width,
+            image_height=plan.image_height,
+            dpi=plan.dpi,
+            show_grid=plan.show_grid,
+            show_legend=plan.show_legend,
+            plan_version=plan.plan_version,
+            limits_version=plan.limits_version,
+            sampling_policy_version=plan.sampling_policy_version,
+            numeric_executor_contract_version=plan.numeric_executor_contract_version,
+            parameterized_sampler_contract_version=(
+                plan.parameterized_sampler_contract_version
+            ),
+            item_plan=_snapshot_geometry_item_plan(item_plan),
+            memory_budget=_snapshot_parameterized_memory(memory),
+        )
+    raise TypeError("scene item exact type is unsupported.")
 
-    return _RenderPlanApprovalSnapshot(
-        scene_items=scene_items,
-        resolved_viewport=_ResolvedViewportSnapshot(
-            x_min=viewport.x_min,
-            x_max=viewport.x_max,
-            y_min=viewport.y_min,
-            y_max=viewport.y_max,
-            aspect=viewport.aspect.value,
-            source=viewport.source.value,
-        ),
-        image_width=plan.image_width,
-        image_height=plan.image_height,
-        dpi=plan.dpi,
-        show_grid=plan.show_grid,
-        show_legend=plan.show_legend,
-        plan_version=plan.plan_version,
-        limits_version=plan.limits_version,
-        sampling_policy_version=plan.sampling_policy_version,
-        numeric_executor_contract_version=plan.numeric_executor_contract_version,
-        item_plan=_ExplicitRenderItemPlanSnapshot(
-            item_id=item_plan.item_id,
-            sample_count=item_plan.sample_count,
-            batch_size=item_plan.batch_size,
-            max_segment_count=item_plan.max_segment_count,
-            max_live_float64_vectors=item_plan.max_live_float64_vectors,
-        ),
-        memory_budget=_RenderMemoryBudgetSnapshot(
-            final_x_bytes=memory_budget.final_x_bytes,
-            final_y_bytes=memory_budget.final_y_bytes,
-            artist_data_bytes=memory_budget.artist_data_bytes,
-            validity_mask_bytes=memory_budget.validity_mask_bytes,
-            segment_index_range_bytes=memory_budget.segment_index_range_bytes,
-            executor_extra_batch_bytes=memory_budget.executor_extra_batch_bytes,
-            rgba_canvas_bytes=memory_budget.rgba_canvas_bytes,
-            png_buffer_reserve_bytes=memory_budget.png_buffer_reserve_bytes,
-            png_copy_bytes=memory_budget.png_copy_bytes,
-        ),
+
+def _snapshot_explicit_item_plan(
+    value: ExplicitRenderItemPlan,
+) -> _ExplicitRenderItemPlanSnapshot:
+    return _ExplicitRenderItemPlanSnapshot(
+        item_id=value.item_id,
+        sample_count=value.sample_count,
+        batch_size=value.batch_size,
+        max_segment_count=value.max_segment_count,
+        max_live_float64_vectors=value.max_live_float64_vectors,
+    )
+
+
+def _snapshot_geometry_item_plan(
+    value: GeometryRenderItemPlan,
+) -> _GeometryRenderItemPlanSnapshot:
+    segment_snapshots: list[_GeometrySegmentPlanSnapshot] = []
+    for segment in value.segments:
+        if type(segment) is LineSegmentPlan:
+            segment_snapshots.append(
+                _LineSegmentPlanSnapshot(
+                    x0=segment.x0,
+                    y0=segment.y0,
+                    x1=segment.x1,
+                    y1=segment.y1,
+                    mathematical_branch_id=segment.mathematical_branch_id,
+                    sample_count=segment.sample_count,
+                    closure=segment.closure.value,
+                ),
+            )
+        elif type(segment) is ParameterIntervalPlan:
+            segment_snapshots.append(
+                _ParameterIntervalPlanSnapshot(
+                    mathematical_branch_id=segment.mathematical_branch_id,
+                    parameter_start=segment.parameter_start,
+                    parameter_stop=segment.parameter_stop,
+                    sample_count=segment.sample_count,
+                    closure=segment.closure.value,
+                ),
+            )
+        else:
+            raise TypeError("geometry segment exact type is unsupported.")
+    return _GeometryRenderItemPlanSnapshot(
+        item_id=value.item_id,
+        mathematical_branch_count=value.mathematical_branch_count,
+        segments=tuple(segment_snapshots),
+        sample_count=value.sample_count,
+        batch_size=value.batch_size,
+        max_segment_count=value.max_segment_count,
+    )
+
+
+def _snapshot_explicit_memory(value: RenderMemoryBudget) -> _RenderMemoryBudgetSnapshot:
+    return _RenderMemoryBudgetSnapshot(
+        final_x_bytes=value.final_x_bytes,
+        final_y_bytes=value.final_y_bytes,
+        artist_data_bytes=value.artist_data_bytes,
+        validity_mask_bytes=value.validity_mask_bytes,
+        segment_index_range_bytes=value.segment_index_range_bytes,
+        segment_metadata_bytes=value.segment_metadata_bytes,
+        executor_extra_batch_bytes=value.executor_extra_batch_bytes,
+        rgba_canvas_bytes=value.rgba_canvas_bytes,
+        png_buffer_reserve_bytes=value.png_buffer_reserve_bytes,
+        png_copy_bytes=value.png_copy_bytes,
+    )
+
+
+def _snapshot_parameterized_memory(
+    value: ParameterizedRenderMemoryBudget,
+) -> _ParameterizedRenderMemoryBudgetSnapshot:
+    return _ParameterizedRenderMemoryBudgetSnapshot(
+        final_x_bytes=value.final_x_bytes,
+        final_y_bytes=value.final_y_bytes,
+        artist_data_bytes=value.artist_data_bytes,
+        segment_index_range_bytes=value.segment_index_range_bytes,
+        segment_metadata_bytes=value.segment_metadata_bytes,
+        parameter_batch_bytes=value.parameter_batch_bytes,
+        transcendental_workspace_bytes=value.transcendental_workspace_bytes,
+        validation_workspace_bytes=value.validation_workspace_bytes,
+        rgba_canvas_bytes=value.rgba_canvas_bytes,
+        png_buffer_reserve_bytes=value.png_buffer_reserve_bytes,
+        png_copy_bytes=value.png_copy_bytes,
     )
 
 
@@ -413,6 +797,76 @@ def _snapshot_explicit_spec(value: object) -> _ExplicitFunctionSpecSnapshot:
             limits_version=validated.limits_version,
         ),
     )
+
+
+def _snapshot_geometry_spec(
+    value: LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec,
+) -> _GeometrySpecSnapshot:
+    fraction_fields: tuple[tuple[str, _FractionSnapshot], ...]
+    enum_fields: tuple[tuple[str, str], ...]
+    if type(value) is LineSpec:
+        fraction_fields = ()
+        enum_fields = ()
+    elif type(value) is CircleSpec:
+        fraction_fields = (
+            ("center_x", _snapshot_fraction(value.center_x)),
+            ("center_y", _snapshot_fraction(value.center_y)),
+            ("radius_squared", _snapshot_fraction(value.radius_squared)),
+        )
+        enum_fields = ()
+    elif type(value) is EllipseSpec:
+        fraction_fields = (
+            ("center_x", _snapshot_fraction(value.center_x)),
+            ("center_y", _snapshot_fraction(value.center_y)),
+            ("semi_axis_x_squared", _snapshot_fraction(value.semi_axis_x_squared)),
+            ("semi_axis_y_squared", _snapshot_fraction(value.semi_axis_y_squared)),
+        )
+        enum_fields = (("major_axis", value.major_axis.value),)
+    elif type(value) is HyperbolaSpec:
+        fraction_fields = (
+            ("center_x", _snapshot_fraction(value.center_x)),
+            ("center_y", _snapshot_fraction(value.center_y)),
+            ("semi_transverse_squared", _snapshot_fraction(value.semi_transverse_squared)),
+            ("semi_conjugate_squared", _snapshot_fraction(value.semi_conjugate_squared)),
+        )
+        enum_fields = (("transverse_axis", value.transverse_axis.value),)
+    elif type(value) is ParabolaSpec:
+        fraction_fields = (
+            ("vertex_x", _snapshot_fraction(value.vertex_x)),
+            ("vertex_y", _snapshot_fraction(value.vertex_y)),
+            ("focal_parameter", _snapshot_fraction(value.focal_parameter)),
+        )
+        enum_fields = (("opening", value.opening.value),)
+    else:
+        raise TypeError("scene item exact geometry type is unsupported.")
+    coefficients = value.coefficients
+    provenance = value.provenance
+    return _GeometrySpecSnapshot(
+        spec_type=type(value).__name__,
+        item_id=value.item_id,
+        coefficients=_PrimitiveEquationCoefficientsSnapshot(
+            a=coefficients.a,
+            b=coefficients.b,
+            c=coefficients.c,
+            d=coefficients.d,
+            e=coefficients.e,
+            f=coefficients.f,
+        ),
+        provenance=_EquationProvenanceSnapshot(
+            normalized_input=provenance.normalized_input,
+            normalized_span=_snapshot_source_span(provenance.normalized_span),
+            source_span=_snapshot_source_span(provenance.source_span),
+            limits_version=provenance.limits_version,
+        ),
+        fraction_fields=fraction_fields,
+        enum_fields=enum_fields,
+    )
+
+
+def _snapshot_fraction(value: object) -> _FractionSnapshot:
+    if type(value) is not Fraction:
+        raise TypeError("geometry fractions must be exact Fraction values.")
+    return _FractionSnapshot(value.numerator, value.denominator)
 
 
 def _snapshot_source_span(value: object) -> _SourceSpanSnapshot:
@@ -468,15 +922,133 @@ def _snapshot_restricted_expression(
     )
 
 
-def _validate_nested_approved_contracts(plan: RenderPlan) -> None:
-    """Recheck nested typed contracts without replacing the issued receipt."""
+def _validate_cross_plan_contracts(plan: RenderPlan) -> None:
+    """Validate the exact Spec/plan/version/memory combination."""
 
+    if type(plan.scene_spec.items) is not tuple or len(plan.scene_spec.items) != 1:
+        raise ValueError("approved render plans require one exact scene item.")
+    if plan.plan_version != RENDER_PLAN_CONTRACT_VERSION:
+        raise ValueError("render plan contract version is not active.")
+    if plan.sampling_policy_version is None:
+        raise ValueError("approved render plan is missing a sampling policy version.")
+    item = plan.scene_spec.items[0]
+    item_plan = plan.item_plan
+    memory = plan.memory_budget
+    if type(item) is ExplicitFunctionSpec:
+        if type(item_plan) is not ExplicitRenderItemPlan:
+            raise TypeError("explicit Spec requires ExplicitRenderItemPlan.")
+        if type(memory) is not RenderMemoryBudget:
+            raise TypeError("explicit Spec requires RenderMemoryBudget.")
+        if plan.numeric_executor_contract_version != (
+            _EXPECTED_NUMERIC_EXECUTOR_CONTRACT_VERSION
+        ):
+            raise ValueError("explicit plan numeric executor contract version is invalid.")
+        if plan.parameterized_sampler_contract_version is not None:
+            raise ValueError("explicit plan must not carry a parameterized sampler version.")
+        if item.limits_version != plan.limits_version:
+            raise ValueError("explicit Spec and plan limits versions do not match.")
+    elif type(item) in {LineSpec, CircleSpec, EllipseSpec, HyperbolaSpec, ParabolaSpec}:
+        if type(item_plan) is not GeometryRenderItemPlan:
+            raise TypeError("geometry Spec requires GeometryRenderItemPlan.")
+        if type(memory) is not ParameterizedRenderMemoryBudget:
+            raise TypeError("geometry Spec requires ParameterizedRenderMemoryBudget.")
+        if plan.numeric_executor_contract_version is not None:
+            raise ValueError("geometry plan must not carry a numeric executor version.")
+        if plan.parameterized_sampler_contract_version != (
+            PARAMETERIZED_SAMPLER_CONTRACT_VERSION
+        ):
+            raise ValueError("geometry parameterized sampler contract version is invalid.")
+        if item.provenance.limits_version != plan.limits_version:
+            raise ValueError("geometry Spec and plan limits versions do not match.")
+        expected_branch_count, expected_capacity, expected_segment_type = (
+            _geometry_approval_shape(type(item))
+        )
+        if item_plan.mathematical_branch_count != expected_branch_count:
+            raise ValueError("geometry mathematical branch count is invalid.")
+        if item_plan.max_segment_count != expected_capacity:
+            raise ValueError("geometry drawable segment capacity is invalid.")
+        if any(type(segment) is not expected_segment_type for segment in item_plan.segments):
+            raise TypeError("geometry segment type does not match the exact Spec.")
+    else:
+        raise TypeError("approved scene item exact type is unsupported.")
+    if item_plan.item_id != item.item_id:
+        raise ValueError("Spec and item plan identities do not match.")
+
+
+def _geometry_approval_shape(spec_type: type[object]) -> tuple[int, int, type[object]]:
+    if spec_type is LineSpec:
+        return (1, 1, LineSegmentPlan)
+    if spec_type is CircleSpec:
+        return (1, 4, ParameterIntervalPlan)
+    if spec_type is EllipseSpec:
+        return (1, 4, ParameterIntervalPlan)
+    if spec_type is HyperbolaSpec:
+        return (2, 4, ParameterIntervalPlan)
+    if spec_type is ParabolaSpec:
+        return (1, 2, ParameterIntervalPlan)
+    raise TypeError("geometry Spec exact type is unsupported.")
+
+
+def _validate_geometry_nested(
+    item: LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec,
+) -> None:
+    item.__post_init__()
+    if type(item.coefficients) is not PrimitiveEquationCoefficients:
+        raise TypeError("geometry coefficients must be exact.")
+    item.coefficients.__post_init__()
+    provenance = item.provenance
+    if type(provenance) is not EquationProvenance:
+        raise TypeError("geometry provenance must be exact.")
+    provenance.__post_init__()
+    provenance.normalized_span.__post_init__()
+    provenance.source_span.__post_init__()
+    if type(item) is CircleSpec:
+        fractions = (item.center_x, item.center_y, item.radius_squared)
+    elif type(item) is EllipseSpec:
+        fractions = (
+            item.center_x,
+            item.center_y,
+            item.semi_axis_x_squared,
+            item.semi_axis_y_squared,
+        )
+        if type(item.major_axis) is not AxisOrientation:
+            raise TypeError("major axis must be exact.")
+    elif type(item) is HyperbolaSpec:
+        fractions = (
+            item.center_x,
+            item.center_y,
+            item.semi_transverse_squared,
+            item.semi_conjugate_squared,
+        )
+        if type(item.transverse_axis) is not AxisOrientation:
+            raise TypeError("transverse axis must be exact.")
+    elif type(item) is ParabolaSpec:
+        fractions = (item.vertex_x, item.vertex_y, item.focal_parameter)
+        if type(item.opening) is not ParabolaOpening:
+            raise TypeError("parabola opening must be exact.")
+    else:
+        fractions = ()
+    for value in fractions:
+        if type(value) is not Fraction or value.denominator <= 0:
+            raise TypeError("geometry fractions must be normalized exact values.")
+        if Fraction(value.numerator, value.denominator) != value:
+            raise ValueError("geometry fraction semantics are invalid.")
+
+
+def _validate_nested_approved_contracts(plan: RenderPlan) -> None:
     plan.scene_spec.__post_init__()
-    for item in plan.scene_spec.items:
-        if type(item) is not ExplicitFunctionSpec:
-            raise TypeError("scene items must be exact ExplicitFunctionSpec values.")
+    item = plan.scene_spec.items[0]
+    if type(item) is ExplicitFunctionSpec:
         item.__post_init__()
+    elif type(item) in {LineSpec, CircleSpec, EllipseSpec, HyperbolaSpec, ParabolaSpec}:
+        _validate_geometry_nested(item)
+    else:
+        raise TypeError("scene item exact type is unsupported.")
     plan.resolved_viewport.__post_init__()
+    if type(plan.resolved_viewport.aspect) is not ResolvedAspect:
+        raise TypeError("resolved aspect must be exact.")
+    if type(plan.resolved_viewport.source) is not ViewportSource:
+        raise TypeError("viewport source must be exact.")
     assert plan.item_plan is not None
     assert plan.memory_budget is not None
     plan.item_plan.__post_init__()
@@ -484,18 +1056,17 @@ def _validate_nested_approved_contracts(plan: RenderPlan) -> None:
 
 
 def _approve_render_plan(plan: RenderPlan) -> RenderPlan:
-    """Attach the internal receipt after the builder completed every check."""
-
     if type(plan) is not RenderPlan:
         raise TypeError("plan must be an exact RenderPlan.")
+    plan.__post_init__()
+    _validate_cross_plan_contracts(plan)
+    _validate_nested_approved_contracts(plan)
     receipt = _issue_approval_receipt(plan)
     object.__setattr__(plan, "_approval_receipt", receipt)
     return validate_approved_render_plan(plan)
 
 
 def validate_approved_render_plan(value: object) -> RenderPlan:
-    """Validate the typed approval capability required by future samplers."""
-
     if type(value) is not RenderPlan:
         raise TypeError("render plan must be an exact RenderPlan.")
     try:
@@ -511,13 +1082,16 @@ def validate_approved_render_plan(value: object) -> RenderPlan:
             value.item_plan is None
             or value.memory_budget is None
             or value.sampling_policy_version is None
-            or value.numeric_executor_contract_version is None
         ):
             raise ValueError("approved render plan is missing budgeted fields.")
-        if type(receipt.approved_snapshot) is not _RenderPlanApprovalSnapshot:
+        if type(receipt.approved_snapshot) not in {
+            _ExplicitRenderPlanApprovalSnapshot,
+            _GeometryRenderPlanApprovalSnapshot,
+        }:
             raise ValueError("render plan approval receipt is invalid.")
         if receipt.approved_snapshot != _approval_snapshot_from_plan(value):
             raise ValueError("render plan and approval receipt do not match.")
+        _validate_cross_plan_contracts(value)
         _validate_nested_approved_contracts(value)
     except MemoryError:
         raise
@@ -534,9 +1108,7 @@ def validate_approved_render_plan(value: object) -> RenderPlan:
     return value
 
 
-def _snapshot_approved_render_plan(value: object) -> _RenderPlanApprovalSnapshot:
-    """Return the sole semantic snapshot only after approval validation succeeds."""
-
+def _snapshot_approved_render_plan(value: object) -> _ApprovedRenderPlanSnapshot:
     return _approval_snapshot_from_plan(validate_approved_render_plan(value))
 
 
@@ -544,8 +1116,16 @@ __all__ = [
     "DEFAULT_EXPLICIT_SAMPLING_POLICY",
     "ExplicitRenderItemPlan",
     "ExplicitSamplingPolicy",
+    "GeometryRenderItemPlan",
+    "GeometrySegmentPlan",
+    "LineSegmentPlan",
+    "PARAMETERIZED_SAMPLER_CONTRACT_VERSION",
+    "ParameterIntervalPlan",
+    "ParameterizedRenderMemoryBudget",
     "RENDER_PLAN_CONTRACT_VERSION",
+    "RenderItemPlan",
     "RenderMemoryBudget",
     "RenderPlan",
+    "SegmentClosure",
     "validate_approved_render_plan",
 ]

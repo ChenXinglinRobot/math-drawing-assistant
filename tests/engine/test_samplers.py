@@ -38,6 +38,7 @@ from math_drawing_assistant.models import (
     PlotItemRequest,
     PlotKind,
     RenderPlan,
+    ResolvedAspect,
     ResolvedViewport,
     ValidatedExplicitExpression,
     ViewportSource,
@@ -69,7 +70,7 @@ def _plan(
         x_max=x_bounds[1],
         y_min=y_bounds[0],
         y_max=y_bounds[1],
-        aspect=AspectRequest.AUTO,
+        aspect=ResolvedAspect.AUTO,
         source=ViewportSource.MANUAL,
     )
     result = build_single_explicit_render_plan(

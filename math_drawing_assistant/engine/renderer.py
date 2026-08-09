@@ -24,7 +24,7 @@ from math_drawing_assistant.models.render_plan import (
     RenderPlan,
     validate_approved_render_plan,
 )
-from math_drawing_assistant.models.state import AspectRequest
+from math_drawing_assistant.models.state import ResolvedAspect
 
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -146,9 +146,9 @@ def render_explicit_png(
         axes.set_autoscale_on(False)
         axes.set_xlim(viewport.x_min, viewport.x_max)
         axes.set_ylim(viewport.y_min, viewport.y_max)
-        if viewport.aspect is AspectRequest.AUTO:
+        if viewport.aspect is ResolvedAspect.AUTO:
             axes.set_aspect("auto")
-        elif viewport.aspect is AspectRequest.EQUAL:
+        elif viewport.aspect is ResolvedAspect.EQUAL:
             axes.set_aspect("equal", adjustable="box")
         else:
             return _internal_error(item_id, "resolved viewport aspect mismatch")

@@ -1,8 +1,8 @@
 # 数学绘图助手：架构约束
 
 版本：v0.1  
-最后更新：2026-08-02
-状态：实施中的架构基线（阶段 12 的 M1 单显函数复制与性能证据已通过总架构师独立审核）
+最后更新：2026-08-09
+状态：实施中的架构基线（Stage 14B-1 已建立公共契约、统一单项边界和预算底座；几何算法与应用整合尚未实施）
 
 ## 1. 文档职责与事实来源
 
@@ -293,6 +293,59 @@ M1.5 支持的图形、方程、精确系数、隐式乘法继承、M1 路由和
 * 每支独立返回，禁止错误连接不同分支。
 
 通用二维 contour 不是受限直线/圆锥曲线的默认主实现。它只可作为诊断对照或未来任意隐式曲线方案的独立原型，不能绕过当前 OUT 范围。
+
+### 7.4 Stage 14B-1 公共契约与阶段边界
+
+Stage 14B-1 把既有 M1 显函数链路扩展为可容纳 Stage 13 六种 exact Spec 的统一公共边界，但不实现直线或圆锥曲线算法。正式单项数据流固定为：
+
+```text
+Stage 13 typed PlotSceneSpec
+→ resolve_single_item_viewport
+→ ResolvedViewport
+→ RenderPlanBuilder.build
+→ 带内部 approval receipt 的 RenderPlan
+→ typed sampler
+→ SampledCurve
+```
+
+`resolve_single_explicit_viewport` 与 `build_single_explicit_render_plan` 保留原签名，仅作为统一实现的兼容 wrapper；不得保留第二套 resolver、Builder 或绕过 RenderPlan/receipt 的采样入口。
+
+用户意图与解析结果使用两个 exact enum：
+
+* `AspectRequest` 为 `DEFAULT | AUTO | EQUAL`，只存在于 `ViewportRequest`；
+* `ResolvedAspect` 为 `AUTO | EQUAL`，只存在于 `ResolvedViewport`；
+* `DEFAULT` 对显函数和一般直线解析为 `AUTO`，对圆、椭圆、双曲线和抛物线解析为 `EQUAL`；用户显式 `AUTO/EQUAL` 始终优先；
+* `ViewportSource.AUTO_GEOMETRY` 为未来几何自动视口成功来源保留。14B-1 的几何自动视口不探测、不回退，返回不可恢复的 typed strategy error；手动视口可为六种 Spec 解析边界与比例。
+
+计划层保持一个顶层 `RenderPlan`，并形成两个封闭联合：
+
+```text
+RenderItemPlan = ExplicitRenderItemPlan | GeometryRenderItemPlan
+GeometrySegmentPlan = LineSegmentPlan | ParameterIntervalPlan
+```
+
+`LineSegmentPlan` 只表示两个不同的有限端点，固定 mathematical branch 0、两个样本和 `OPEN`；`ParameterIntervalPlan` 显式保存 mathematical branch ID、有序有限参数区间、样本数和 `SegmentClosure`。`GeometryRenderItemPlan` 禁止两类 segment 混装，并分别校验数学分支数、drawable segment capacity、样本总数和 batch 上界。数学分支数描述曲线本体；segment/path capacity 描述经视口裁切后的可绘制片段，两者不得混用。
+
+approval receipt 是内部 typed union。签发前和每次消费时都统一交叉验证 exact Spec、item plan、memory budget 和版本组合，并独立快照 Spec、精确系数、provenance/source spans、Fraction 分子分母、几何 enum、ResolvedViewport、segment、版本、全部预算与输出字段。对象即使通过 `object.__setattr__` 被篡改，也只能验证失败，不重新签 receipt。
+
+合法版本/预算组合只有：
+
+| item plan | numeric executor version | parameterized sampler version | memory |
+|---|---|---|---|
+| `ExplicitRenderItemPlan` | 当前 numeric executor version | `None` | exact `RenderMemoryBudget` |
+| `GeometryRenderItemPlan` | `None` | `parameterized-sampler-v1` | exact `ParameterizedRenderMemoryBudget` |
+
+`RenderMemoryBudget` 保持公开名称并新增 `segment_metadata_bytes`；参数化预算独立记录最终 x/y、artist、segment ranges/metadata、parameter batch、transcendental/validation workspace、RGBA canvas 与 PNG 缓冲/复制，提供 fixed、batch 和 total 求和。参数化预算不复用 numeric executor 的 `executor_extra_batch_bytes`。
+
+成功结果联合为：
+
+```text
+SampledCurve = SampledExplicitFunction | SampledParameterizedCurve
+```
+
+`SampledExplicitFunction` 保持 exact class、构造签名和原 dataclass 字段，通过只读 property 投影 branch ID 为 `None` 的 segment metadata。`SampledParameterizedCurve` 只接受自有、只读 `float64` x/y 和 `int64 [start, stop)` ranges，每个 segment 至少两个点并与 typed metadata 一一对应；普通公共构造不能注入 approval snapshot。
+
+Stage 14B-1 只交付上述公共契约、统一边界和预算底座。直线与视口求交、圆/椭圆角区间、双曲线两支、抛物线可见参数区间、残差/密度/数值容差、正式参数化 sampler、几何 renderer，以及 `SceneRenderExecutor`、Actor、Controller、UI 整合均属于后续 Stage 14/15 子步骤。本步骤不关闭 P0-06，不表示 Stage 14 或 M1.5 完成。
 
 ## 8. RenderActor 并发模型
 

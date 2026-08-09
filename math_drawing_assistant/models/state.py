@@ -42,6 +42,14 @@ class ViewportMode(str, Enum):
 class AspectRequest(str, Enum):
     """The coordinate aspect requested by the user."""
 
+    DEFAULT = "default"
+    AUTO = "auto"
+    EQUAL = "equal"
+
+
+class ResolvedAspect(str, Enum):
+    """The exact coordinate aspect chosen by the viewport resolver."""
+
     AUTO = "auto"
     EQUAL = "equal"
 
@@ -52,3 +60,4 @@ class ViewportSource(str, Enum):
     MANUAL = "manual"
     AUTO_PROBE = "auto_probe"
     AUTO_FALLBACK = "auto_fallback"
+    AUTO_GEOMETRY = "auto_geometry"

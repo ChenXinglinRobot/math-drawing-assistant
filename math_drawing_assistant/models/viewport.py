@@ -7,6 +7,7 @@ from math import isfinite
 
 from math_drawing_assistant.models.state import (
     AspectRequest,
+    ResolvedAspect,
     ViewportMode,
     ViewportSource,
 )
@@ -33,12 +34,12 @@ class ViewportRequest:
     x_max: float | None = None
     y_min: float | None = None
     y_max: float | None = None
-    aspect_request: AspectRequest = AspectRequest.AUTO
+    aspect_request: AspectRequest = AspectRequest.DEFAULT
 
     def __post_init__(self) -> None:
-        if not isinstance(self.mode, ViewportMode):
+        if type(self.mode) is not ViewportMode:
             raise TypeError("mode must be a ViewportMode.")
-        if not isinstance(self.aspect_request, AspectRequest):
+        if type(self.aspect_request) is not AspectRequest:
             raise TypeError("aspect_request must be an AspectRequest.")
 
         for name in ("x_min", "x_max", "y_min", "y_max"):
@@ -65,13 +66,13 @@ class ResolvedViewport:
     x_max: float
     y_min: float
     y_max: float
-    aspect: AspectRequest
+    aspect: ResolvedAspect
     source: ViewportSource
 
     def __post_init__(self) -> None:
-        if not isinstance(self.aspect, AspectRequest):
-            raise TypeError("aspect must be an AspectRequest.")
-        if not isinstance(self.source, ViewportSource):
+        if type(self.aspect) is not ResolvedAspect:
+            raise TypeError("aspect must be an exact ResolvedAspect.")
+        if type(self.source) is not ViewportSource:
             raise TypeError("source must be a ViewportSource.")
 
         for name in ("x_min", "x_max", "y_min", "y_max"):

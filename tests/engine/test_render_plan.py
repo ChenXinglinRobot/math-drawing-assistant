@@ -30,6 +30,7 @@ from math_drawing_assistant.models import (
     PlotKind,
     PlotSceneSpec,
     RenderPlan,
+    ResolvedAspect,
     ResolvedViewport,
     ValidatedExplicitExpression,
     ViewportSource,
@@ -58,7 +59,7 @@ def _viewport() -> ResolvedViewport:
         x_max=10,
         y_min=-8,
         y_max=8,
-        aspect=AspectRequest.AUTO,
+        aspect=ResolvedAspect.AUTO,
         source=ViewportSource.MANUAL,
     )
 
@@ -97,7 +98,7 @@ def _forged_viewport(**overrides: object) -> ResolvedViewport:
         "x_max": 10.0,
         "y_min": -8.0,
         "y_max": 8.0,
-        "aspect": AspectRequest.AUTO,
+        "aspect": ResolvedAspect.AUTO,
         "source": ViewportSource.MANUAL,
     }
     values.update(overrides)
@@ -147,6 +148,7 @@ def test_budget_components_follow_the_published_scalar_formula() -> None:
     assert budget.artist_data_bytes == budget.final_x_bytes + budget.final_y_bytes
     assert budget.validity_mask_bytes == item.sample_count
     assert budget.segment_index_range_bytes == item.max_segment_count * 2 * 8
+    assert budget.segment_metadata_bytes == item.max_segment_count * 2 * 8
     assert budget.executor_extra_batch_bytes == (
         max(item.max_live_float64_vectors - 1, 0) * item.batch_size * 8
     )
@@ -159,6 +161,7 @@ def test_budget_components_follow_the_published_scalar_formula() -> None:
         + budget.artist_data_bytes
         + budget.validity_mask_bytes
         + budget.segment_index_range_bytes
+        + budget.segment_metadata_bytes
         + budget.rgba_canvas_bytes
         + budget.png_buffer_reserve_bytes
         + budget.png_copy_bytes
@@ -322,7 +325,7 @@ def test_legal_ordinary_viewport_value_is_revalidated_and_accepted() -> None:
         x_max=3,
         y_min=-4,
         y_max=5,
-        aspect=AspectRequest.EQUAL,
+        aspect=ResolvedAspect.EQUAL,
         source=ViewportSource.AUTO_PROBE,
     )
     plan = _success(resolved_viewport=viewport)
@@ -414,6 +417,7 @@ def test_approval_snapshot_rejects_in_place_item_plan_tampering(
         "artist_data_bytes",
         "validity_mask_bytes",
         "segment_index_range_bytes",
+        "segment_metadata_bytes",
         "executor_extra_batch_bytes",
         "rgba_canvas_bytes",
         "png_buffer_reserve_bytes",
@@ -549,7 +553,7 @@ def test_approval_snapshot_rejects_viewport_replacements() -> None:
             x_max=10,
             y_min=-8,
             y_max=8,
-            aspect=AspectRequest.AUTO,
+            aspect=ResolvedAspect.AUTO,
             source=ViewportSource.MANUAL,
         ),
     )

@@ -20,6 +20,7 @@ from math_drawing_assistant.models.state import (
     AspectRequest,
     InputSource,
     PlotKind,
+    ResolvedAspect,
     ViewportMode,
     ViewportSource,
 )
@@ -159,7 +160,7 @@ def test_auto_y_resolution_is_returned_from_the_formal_resolver() -> None:
     assert result.success is True
     assert result.resolved_viewport is not None
     assert result.resolved_viewport.source is ViewportSource.AUTO_PROBE
-    assert result.resolved_viewport.aspect is AspectRequest.AUTO
+    assert result.resolved_viewport.aspect is ResolvedAspect.AUTO
     assert result.resolved_viewport.x_min == -2
     assert result.resolved_viewport.x_max == 2
     assert result.resolved_viewport.y_min < result.resolved_viewport.y_max
@@ -205,7 +206,7 @@ def test_manual_four_bounds_and_requested_aspect_take_priority() -> None:
     assert result.success is True
     assert result.resolved_viewport is not None
     assert result.resolved_viewport.source is ViewportSource.MANUAL
-    assert result.resolved_viewport.aspect is AspectRequest.EQUAL
+    assert result.resolved_viewport.aspect is ResolvedAspect.EQUAL
     assert (
         result.resolved_viewport.x_min,
         result.resolved_viewport.x_max,

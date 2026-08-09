@@ -13,7 +13,12 @@ from math_drawing_assistant.engine.numeric_executor import (
 )
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo
 from math_drawing_assistant.models.plot_specs import (
+    CircleSpec,
+    EllipseSpec,
     ExplicitFunctionSpec,
+    HyperbolaSpec,
+    LineSpec,
+    ParabolaSpec,
     PlotSceneSpec,
     _validate_validated_explicit_expression,
 )
@@ -26,18 +31,27 @@ from math_drawing_assistant.models.render_plan import (
     RenderPlan,
     _approve_render_plan,
 )
-from math_drawing_assistant.models.state import AspectRequest, ViewportSource
+from math_drawing_assistant.models.state import ResolvedAspect, ViewportSource
 from math_drawing_assistant.models.viewport import ResolvedViewport
 
 
 _FLOAT64_BYTES = 8
 _RGBA_BYTES_PER_PIXEL = 4
 _SEGMENT_INDEX_RANGE_BYTES = 2 * _FLOAT64_BYTES
+_SEGMENT_METADATA_BYTES = 2 * _FLOAT64_BYTES
+_GEOMETRY_SPEC_TYPES = (
+    LineSpec,
+    CircleSpec,
+    EllipseSpec,
+    HyperbolaSpec,
+    ParabolaSpec,
+)
+_SINGLE_ITEM_SPEC_TYPES = (ExplicitFunctionSpec, *_GEOMETRY_SPEC_TYPES)
 
 
 @dataclass(frozen=True, slots=True)
 class RenderPlanBuilder:
-    """Build the only stage 8C-1 plan: one explicit item and scalar outputs."""
+    """Unified exact-Spec dispatch boundary for one scalar-only render plan."""
 
     limits: ApplicationLimits = DEFAULT_LIMITS
     sampling_policy: ExplicitSamplingPolicy = DEFAULT_EXPLICIT_SAMPLING_POLICY
@@ -64,7 +78,7 @@ class RenderPlanBuilder:
             return policy_or_error
         policy = policy_or_error
 
-        spec_or_error = _validated_single_explicit_spec(scene_spec, limits=limits)
+        spec_or_error = _validated_single_spec(scene_spec, limits=limits)
         if isinstance(spec_or_error, ErrorInfo):
             return spec_or_error
         spec = spec_or_error
@@ -82,6 +96,13 @@ class RenderPlanBuilder:
         )
         if output_error is not None:
             return output_error
+
+        if type(spec) is not ExplicitFunctionSpec:
+            return _internal_error(
+                "geometry_strategy",
+                "geometry plan construction is not implemented in stage 14B-1",
+                item_id=spec.item_id,
+            )
 
         sample_count_or_error = _planned_sample_count(
             image_width=image_width,
@@ -151,6 +172,7 @@ class RenderPlanBuilder:
                 numeric_executor_contract_version=(
                     NUMERIC_EXECUTOR_CONTRACT_VERSION
                 ),
+                parameterized_sampler_contract_version=None,
                 item_plan=item_plan,
                 memory_budget=memory_budget,
             )
@@ -211,32 +233,48 @@ def _validated_policy(policy: object) -> ExplicitSamplingPolicy | ErrorInfo:
     return policy
 
 
-def _validated_single_explicit_spec(
+def _validated_single_spec(
     scene_spec: object,
     *,
     limits: ApplicationLimits,
-) -> ExplicitFunctionSpec | ErrorInfo:
+) -> (
+    ExplicitFunctionSpec
+    | LineSpec
+    | CircleSpec
+    | EllipseSpec
+    | HyperbolaSpec
+    | ParabolaSpec
+    | ErrorInfo
+):
     if type(scene_spec) is not PlotSceneSpec:
         return _invalid_request("scene_spec", "builder requires an exact PlotSceneSpec")
     if len(scene_spec.items) != 1:
         return _invalid_request("scene_spec", "builder requires exactly one scene item")
     spec = scene_spec.items[0]
-    if type(spec) is not ExplicitFunctionSpec:
+    if type(spec) not in _SINGLE_ITEM_SPEC_TYPES:
         return _invalid_request(
             "scene_spec",
-            "builder requires an exact ExplicitFunctionSpec item",
+            "builder requires one exact supported Stage 13 item",
         )
     try:
         scene_spec.__post_init__()
         spec.__post_init__()
-        _validate_validated_explicit_expression(
-            spec.validated_expression,
-            active_limits_version=limits.version,
-        )
+        if type(spec) is ExplicitFunctionSpec:
+            _validate_validated_explicit_expression(
+                spec.validated_expression,
+                active_limits_version=limits.version,
+            )
+        else:
+            spec.coefficients.__post_init__()
+            spec.provenance.__post_init__()
+            spec.provenance.normalized_span.__post_init__()
+            spec.provenance.source_span.__post_init__()
+            if spec.provenance.limits_version != limits.version:
+                raise ValueError("geometry specification limits version is not active")
     except (AttributeError, TypeError, ValueError):
         return _internal_error(
             "scene_spec",
-            "explicit specification limits contract is not active",
+            "specification limits contract is not active",
             item_id=spec.item_id,
         )
     return spec
@@ -254,7 +292,7 @@ def _validate_resolved_viewport(
             "resolved_viewport",
             "builder requires an exact ResolvedViewport",
         )
-    if type(viewport.aspect) is not AspectRequest:
+    if type(viewport.aspect) is not ResolvedAspect:
         return _invalid_request("resolved_viewport.aspect", "aspect is not published")
     if type(viewport.source) is not ViewportSource:
         return _invalid_request("resolved_viewport.source", "source is not published")
@@ -369,6 +407,7 @@ def _plan_memory_and_batch(
         segment_index_range_bytes=(
             max_segment_count * _SEGMENT_INDEX_RANGE_BYTES
         ),
+        segment_metadata_bytes=max_segment_count * _SEGMENT_METADATA_BYTES,
         executor_extra_batch_bytes=0,
         rgba_canvas_bytes=image_width * image_height * _RGBA_BYTES_PER_PIXEL,
         png_buffer_reserve_bytes=limits.max_png_bytes,
@@ -417,6 +456,7 @@ def _plan_memory_and_batch(
         artist_data_bytes=fixed_budget.artist_data_bytes,
         validity_mask_bytes=fixed_budget.validity_mask_bytes,
         segment_index_range_bytes=fixed_budget.segment_index_range_bytes,
+        segment_metadata_bytes=fixed_budget.segment_metadata_bytes,
         executor_extra_batch_bytes=(bytes_per_batch_point * batch_size),
         rgba_canvas_bytes=fixed_budget.rgba_canvas_bytes,
         png_buffer_reserve_bytes=fixed_budget.png_buffer_reserve_bytes,

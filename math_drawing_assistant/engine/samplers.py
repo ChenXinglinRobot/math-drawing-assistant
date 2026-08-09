@@ -30,6 +30,8 @@ from math_drawing_assistant.models.render_plan import (
     ExplicitSamplingPolicy,
     RenderMemoryBudget,
     RenderPlan,
+    SegmentClosure,
+    _GeometryRenderPlanApprovalSnapshot,
     _RenderPlanApprovalSnapshot,
     _snapshot_approved_render_plan,
     validate_approved_render_plan,
@@ -52,6 +54,8 @@ class SamplingWarningCode(str, Enum):
 
     PARTIAL_DOMAIN_OMITTED = "partial_domain_omitted"
     DENSE_OSCILLATION_SUSPECTED = "dense_oscillation_suspected"
+    VIEWPORT_CLIPPED = "viewport_clipped"
+    SAMPLING_PRECISION_LIMITED = "sampling_precision_limited"
 
 
 class NoVisibleCurveReason(str, Enum):
@@ -99,7 +103,32 @@ class DenseOscillationMetrics:
             raise ValueError("samples_per_monotone_run must not be negative.")
 
 
-SamplingWarningMetrics: TypeAlias = PartialDomainMetrics | DenseOscillationMetrics
+@dataclass(frozen=True, slots=True)
+class ViewportClippedMetrics:
+    """Typed count of parameterized segments clipped by the final viewport."""
+
+    clipped_segment_count: int
+
+    def __post_init__(self) -> None:
+        _positive_int(self.clipped_segment_count, "clipped_segment_count")
+
+
+@dataclass(frozen=True, slots=True)
+class SamplingPrecisionLimitedMetrics:
+    """Typed count of parameterized segments affected by precision limits."""
+
+    limited_segment_count: int
+
+    def __post_init__(self) -> None:
+        _positive_int(self.limited_segment_count, "limited_segment_count")
+
+
+SamplingWarningMetrics: TypeAlias = (
+    PartialDomainMetrics
+    | DenseOscillationMetrics
+    | ViewportClippedMetrics
+    | SamplingPrecisionLimitedMetrics
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +147,14 @@ class SamplingWarning:
         elif self.code is SamplingWarningCode.DENSE_OSCILLATION_SUSPECTED:
             if type(self.metrics) is not DenseOscillationMetrics:
                 raise TypeError("dense-oscillation warnings need DenseOscillationMetrics.")
+        elif self.code is SamplingWarningCode.VIEWPORT_CLIPPED:
+            if type(self.metrics) is not ViewportClippedMetrics:
+                raise TypeError("viewport-clipped warnings need ViewportClippedMetrics.")
+        elif self.code is SamplingWarningCode.SAMPLING_PRECISION_LIMITED:
+            if type(self.metrics) is not SamplingPrecisionLimitedMetrics:
+                raise TypeError(
+                    "sampling-precision warnings need SamplingPrecisionLimitedMetrics.",
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +254,109 @@ class SampledExplicitFunction:
             previous_stop = stop
 
 
-SamplingOutcome: TypeAlias = SampledExplicitFunction | SamplingCancelled | ErrorInfo
+    @property
+    def segment_metadata(self) -> tuple["SampledSegmentMetadata", ...]:
+        """Return explicit segments as branchless, open metadata values."""
+
+        return tuple(
+            SampledSegmentMetadata(
+                mathematical_branch_id=None,
+                closure=SegmentClosure.OPEN,
+            )
+            for _ in range(self.segment_ranges.shape[0])
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SampledSegmentMetadata:
+    """Typed mathematical branch and closure metadata for one sampled segment."""
+
+    mathematical_branch_id: int | None
+    closure: SegmentClosure
+
+    def __post_init__(self) -> None:
+        if self.mathematical_branch_id is not None:
+            _nonnegative_int(self.mathematical_branch_id, "mathematical_branch_id")
+        if type(self.closure) is not SegmentClosure:
+            raise TypeError("closure must be an exact SegmentClosure.")
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterizedSamplingDiagnostics:
+    """Structural diagnostics for a future approved parameterized sampler."""
+
+    sampled_segment_count: int
+    sampled_point_count: int
+
+    def __post_init__(self) -> None:
+        _positive_int(self.sampled_segment_count, "sampled_segment_count")
+        _positive_int(self.sampled_point_count, "sampled_point_count")
+
+
+@dataclass(frozen=True, slots=True)
+class SampledParameterizedCurve:
+    """Owned, read-only typed result model for approved parameterized sampling."""
+
+    item_id: str
+    x: Float64Vector
+    y: Float64Vector
+    segment_ranges: Int64Ranges
+    segment_metadata: tuple[SampledSegmentMetadata, ...]
+    visible_segment_count: int
+    warnings: tuple[SamplingWarning, ...]
+    diagnostics: ParameterizedSamplingDiagnostics
+    _plan_contract_snapshot: _GeometryRenderPlanApprovalSnapshot | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        _item_id(self.item_id)
+        _frozen_owned_vector(self.x, "x")
+        _frozen_owned_vector(self.y, "y")
+        if self.x.shape != self.y.shape:
+            raise ValueError("x and y must have the same shape.")
+        _frozen_owned_ranges(self.segment_ranges)
+        if self.segment_ranges.shape[0] == 0:
+            raise ValueError("parameterized sampling needs at least one segment.")
+        if type(self.segment_metadata) is not tuple or not all(
+            type(metadata) is SampledSegmentMetadata
+            for metadata in self.segment_metadata
+        ):
+            raise TypeError("segment_metadata must be an exact typed tuple.")
+        if len(self.segment_metadata) != self.segment_ranges.shape[0]:
+            raise ValueError("segment metadata must correspond one-to-one with ranges.")
+        if any(
+            metadata.mathematical_branch_id is None
+            for metadata in self.segment_metadata
+        ):
+            raise ValueError("parameterized segments require mathematical branch ids.")
+        _positive_int(self.visible_segment_count, "visible_segment_count")
+        if self.visible_segment_count > self.segment_ranges.shape[0]:
+            raise ValueError("visible segment count exceeds segment count.")
+        if type(self.warnings) is not tuple or not all(
+            type(warning) is SamplingWarning for warning in self.warnings
+        ):
+            raise TypeError("warnings must be a tuple of SamplingWarning values.")
+        if type(self.diagnostics) is not ParameterizedSamplingDiagnostics:
+            raise TypeError("diagnostics must be ParameterizedSamplingDiagnostics.")
+        if self.diagnostics.sampled_segment_count != self.segment_ranges.shape[0]:
+            raise ValueError("diagnostic segment count does not match ranges.")
+        if self.diagnostics.sampled_point_count != self.x.shape[0]:
+            raise ValueError("diagnostic point count does not match samples.")
+        previous_stop = 0
+        for start_value, stop_value in self.segment_ranges:
+            start = int(start_value)
+            stop = int(stop_value)
+            if start < previous_stop or stop - start < 2 or stop > self.x.shape[0]:
+                raise ValueError("segment ranges must be ordered valid half-open ranges.")
+            previous_stop = stop
+
+
+SampledCurve: TypeAlias = SampledExplicitFunction | SampledParameterizedCurve
+SamplingOutcome: TypeAlias = SampledCurve | SamplingCancelled | ErrorInfo
 
 
 def _sampled_explicit_function_matches_approved_plan(
@@ -977,11 +1116,18 @@ __all__ = [
     "DenseOscillationMetrics",
     "NoVisibleCurveReason",
     "PartialDomainMetrics",
+    "ParameterizedSamplingDiagnostics",
+    "SampledCurve",
     "SampledExplicitFunction",
+    "SampledParameterizedCurve",
+    "SampledSegmentMetadata",
+    "SamplingPrecisionLimitedMetrics",
     "SamplingCancelled",
     "SamplingDiagnostics",
     "SamplingOutcome",
     "SamplingWarning",
     "SamplingWarningCode",
+    "SamplingWarningMetrics",
+    "ViewportClippedMetrics",
     "sample_explicit_function",
 ]

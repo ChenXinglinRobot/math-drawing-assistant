@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
-文档版本：stage-13-equation-analysis-v1
-状态：阶段 13A 至 13E 已完成。M1.5 已提供单项 request-level equation analysis、五种 typed equation Specs 与既有 M1 显函数入口的兼容行为；尚未接入 `SceneRenderExecutor`、viewport、sampling、render 或 UI。阶段 14/15 和核心 MVP 仍未完成。
+文档版本：stage-14b1-typed-geometry-contracts-v1
+状态：阶段 13A 至 13E 已完成；Stage 14B-1 已建立统一单项 viewport/Builder 边界、typed RenderPlan/receipt/预算与结果联合。直线和圆锥曲线算法、正式参数化 sampler、geometry renderer、应用整合仍未实现；P0-06、Stage 14/15 和核心 MVP 均未完成。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
@@ -362,6 +362,7 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 | `invalid_viewport` | 视口请求的边界、顺序、跨度或坐标范围无效 | 阶段 8B resolver |
 | `viewport_probe_budget_exceeded` | 自动视口探测的独立预分配预算不足或获批分配失败 | 阶段 8B resolver |
 | `no_visible_curve` | 采样成功但当前视口没有可绘制曲线；内部 typed reason 区分无有限点、无可绘制段和视口外 | 阶段 8C-2 sampler |
+| `numeric_range_unsupported` | 参数化数值范围超出当前可证明支持的有限精度范围 | 阶段 14B-1 错误注册；本阶段不实际生成 |
 <!-- ERROR_CODE_REGISTRY_END -->
 
 ## 阶段 8B 单显函数视口解析契约
@@ -581,6 +582,8 @@ warning 只含稳定 code 和匹配的 typed metrics，不含自由文本周期�
 |---|---|---|
 | `partial_domain_omitted` | `finite_sample_count`、`nonfinite_sample_count` | 部分定义域有可绘制结果，非有限部分已省略 |
 | `dense_oscillation_suspected` | `significant_direction_change_count`、`valid_adjacent_pair_count`、`samples_per_monotone_run` | 受预算样本可能不足以表达密集振荡 |
+| `viewport_clipped` | exact `ViewportClippedMetrics(clipped_segment_count)` | 参数化结果未来用于报告被最终视口裁切的 segment；14B-1 只注册，不生成 |
+| `sampling_precision_limited` | exact `SamplingPrecisionLimitedMetrics(limited_segment_count)` | 参数化结果未来用于报告精度受限 segment；14B-1 只注册，不生成 |
 
 密集振荡代理在每个 segment 内读取一阶差分；绝对变化小于一个 y 输出像素
 `(y_max-y_min)/image_height` 时忽略。统计显著差分方向反转，`valid_adjacent_pair_count` 为
@@ -764,3 +767,74 @@ NumericExecutionCost.max_live_float64_vectors
 <!-- STAGE_13_X0_ERROR_PRECEDENCE_END -->
 
 变量零次幂不新增 `variable_zero_exponent`，exact arithmetic 资源超限不新增 `equation_normalization_limit_exceeded`，仍分别使用 `unsupported_equation` 与 `resource_limit_exceeded`。当多个非法结构重叠时，bounded polynomial traversal 按既有子节点访问顺序立即传播错误；这只决定先报告哪个错误，不改变输入被拒绝的事实。阶段 13E 不修改该 traversal。
+
+## Stage 14B-1 公共契约、统一边界与预算底座
+
+### aspect、viewport 与统一 resolver
+
+`ViewportRequest.aspect_request` 的默认值为 `AspectRequest.DEFAULT`。request enum 的完整成员是 `DEFAULT | AUTO | EQUAL`；成功的 `ResolvedViewport.aspect` 必须是 exact `ResolvedAspect.AUTO | ResolvedAspect.EQUAL`，不得保存任何 `AspectRequest` 成员。
+
+DEFAULT 映射表：
+
+| exact Stage 13 Spec | `ResolvedAspect` |
+|---|---|
+| `ExplicitFunctionSpec` | `AUTO` |
+| `LineSpec` | `AUTO` |
+| `CircleSpec` | `EQUAL` |
+| `EllipseSpec` | `EQUAL` |
+| `HyperbolaSpec` | `EQUAL` |
+| `ParabolaSpec` | `EQUAL` |
+
+用户显式 `AspectRequest.AUTO/EQUAL` 覆盖上表。`resolve_single_item_viewport` 是唯一单项 resolver；既有 `resolve_single_explicit_viewport` 保留签名并委托它。manual 模式为六种 exact Spec 校验四边界和 aspect，source 为 `MANUAL`。显函数 auto 完全保持既有 probe/typed warning/fallback 行为。几何 auto 在 14B-1 不运行 probe 或 fallback，返回 `internal_error`、`field_name="viewport_strategy"`、`recoverable=False`。`ViewportSource.AUTO_GEOMETRY` 已注册给未来成功实现，本阶段不产生该成功 source。未知 exact Spec 返回 `invalid_request`。
+
+### RenderPlan、版本与 approval receipt
+
+当前计划版本为 `render-plan-v2-typed-geometry`，参数化 sampler 契约版本为 `parameterized-sampler-v1`。封闭联合为：
+
+```text
+GeometrySegmentPlan = LineSegmentPlan | ParameterIntervalPlan
+RenderItemPlan = ExplicitRenderItemPlan | GeometryRenderItemPlan
+```
+
+几何 approval 固定矩阵：
+
+| exact Spec | mathematical branches | drawable segment capacity | exact segment type |
+|---|---:|---:|---|
+| `LineSpec` | 1 | 1 | `LineSegmentPlan` |
+| `CircleSpec` | 1 | 4 | `ParameterIntervalPlan` |
+| `EllipseSpec` | 1 | 4 | `ParameterIntervalPlan` |
+| `HyperbolaSpec` | 2 | 4 | `ParameterIntervalPlan` |
+| `ParabolaSpec` | 1 | 2 | `ParameterIntervalPlan` |
+
+合法组合只有：
+
+| plan | sampling policy | numeric version | parameterized version | memory |
+|---|---|---|---|---|
+| exact `ExplicitRenderItemPlan` | 非空 | `numeric-executor-v1-postorder-float64` | `None` | exact `RenderMemoryBudget` |
+| exact `GeometryRenderItemPlan` | 非空 | `None` | `parameterized-sampler-v1` | exact `ParameterizedRenderMemoryBudget` |
+
+receipt 在签发前和消费时交叉校验上述矩阵，并独立快照 exact Spec 类型、六个 primitive integer coefficients、EquationProvenance 文本/spans/limits、全部 Fraction 分子分母和几何 enum、ResolvedViewport、endpoint/interval、branch、sample、closure、版本、全部 memory 字段与输出配置。公开 API 不提供 receipt 构造器，也不接受调用者传入现成 geometry segments 直接批准。
+
+### 内存预算与历史 limits 语义
+
+`RenderMemoryBudget` 保持公开名称，新增并计入 `segment_metadata_bytes`。其 `fixed_bytes` 包含最终 x/y、artist、validity mask、segment ranges/metadata、RGBA canvas、PNG reserve/copy；`batch_bytes` 为 numeric executor 的额外 batch；`total_bytes = fixed_bytes + batch_bytes`。
+
+`ParameterizedRenderMemoryBudget` 独立记录 `final_x_bytes`、`final_y_bytes`、`artist_data_bytes`、`segment_index_range_bytes`、`segment_metadata_bytes`、`parameter_batch_bytes`、`transcendental_workspace_bytes`、`validation_workspace_bytes`、`rgba_canvas_bytes`、`png_buffer_reserve_bytes` 与 `png_copy_bytes`。parameter/transcendental/validation 三项组成 `batch_bytes`，其余组成 `fixed_bytes`，`total_bytes = fixed_bytes + batch_bytes`。参数化预算没有也不伪装 `executor_extra_batch_bytes`。
+
+历史配置字段 `max_branches_per_item` 与 `max_total_branches` 保持名称、值、版本不变；它们当前实际批准 drawable segment/path capacity，不表示数学曲线 branch count。数学 branch count 由 exact geometry plan 矩阵独立声明和验证。本步骤未增加 `ApplicationLimits` 字段，也未修改 limits version。
+
+### typed sampled result 与 warning 注册
+
+公共成功联合为 `SampledCurve = SampledExplicitFunction | SampledParameterizedCurve`。
+
+`SampledExplicitFunction` 保持原 exact class、原构造参数和原 dataclass 字段，包括 `finite_sample_count`、`nonfinite_sample_count`、`isolated_finite_count`、`discontinuity_break_count`、`visible_segment_count`；只新增只读 `segment_metadata` property，其 branch ID 全为 `None`、closure 为 `OPEN`。
+
+`SampledParameterizedCurve` 要求自有且只读的一维 `float64` x/y、自有且只读的 `(S,2)` `int64` 半开 ranges、与 ranges 一一对应且 branch ID 非空的 `SampledSegmentMetadata`、typed warnings 和 `ParameterizedSamplingDiagnostics`。每个成功 segment 至少两个点。内部 approval snapshot 不在公共构造签名中。
+
+新增错误码 `numeric_range_unsupported` 及 warning `viewport_clipped`、`sampling_precision_limited` 已进入注册表。两个 warning 只接受各自 exact typed metrics；14B-1 不实际生成它们。
+
+### 明确未实现与门禁
+
+Stage 14B-1 没有实现：直线与视口求交、圆/椭圆角区间、双曲线分支、抛物线参数区间、几何自动视口、几何采样密度/残差/容差 policy、正式参数化 sampling 入口、几何 renderer、contour 后备链路、多 item、`SceneRenderExecutor`/RenderActor/AppController/UI 整合。
+
+因此 P0-06 保持打开，不宣称 Stage 14 或 M1.5 完成，也不开始 14B-2。

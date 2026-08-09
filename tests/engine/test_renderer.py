@@ -39,13 +39,13 @@ from math_drawing_assistant.engine import (
 from math_drawing_assistant.engine import renderer
 from math_drawing_assistant.models import render_plan as render_plan_model
 from math_drawing_assistant.models import (
-    AspectRequest,
     ErrorCode,
     ErrorInfo,
     InputSource,
     PlotItemRequest,
     PlotKind,
     RenderPlan,
+    ResolvedAspect,
     ResolvedViewport,
     ValidatedExplicitExpression,
     ViewportSource,
@@ -57,7 +57,7 @@ def _plan(
     *,
     x_bounds: tuple[float, float] = (-10, 10),
     y_bounds: tuple[float, float] = (-10, 10),
-    aspect: AspectRequest = AspectRequest.AUTO,
+    aspect: ResolvedAspect = ResolvedAspect.AUTO,
     image_width: int = 320,
     image_height: int = 240,
     dpi: int = 96,
@@ -572,13 +572,13 @@ def test_sampled_item_id_is_rechecked_after_provenance(
 @pytest.mark.parametrize(
     ("aspect", "expected_aspect"),
     [
-        (AspectRequest.AUTO, "auto"),
-        (AspectRequest.EQUAL, 1.0),
+        (ResolvedAspect.AUTO, "auto"),
+        (ResolvedAspect.EQUAL, 1.0),
     ],
 )
 def test_viewport_autoscale_and_aspect_are_fixed_by_the_plan(
     monkeypatch: pytest.MonkeyPatch,
-    aspect: AspectRequest,
+    aspect: ResolvedAspect,
     expected_aspect: str | float,
 ) -> None:
     plan = _plan(
@@ -1499,7 +1499,7 @@ def test_fresh_process_renderer_does_not_select_backend_or_import_gui_modules() 
                 sample_explicit_function,
             )
             from math_drawing_assistant.models import (
-                AspectRequest,
+                ResolvedAspect,
                 InputSource,
                 PlotItemRequest,
                 PlotKind,
@@ -1527,7 +1527,7 @@ def test_fresh_process_renderer_does_not_select_backend_or_import_gui_modules() 
                 x_max=10,
                 y_min=-10,
                 y_max=10,
-                aspect=AspectRequest.AUTO,
+                aspect=ResolvedAspect.AUTO,
                 source=ViewportSource.MANUAL,
             )
             plan = RenderPlanBuilder(limits=DEFAULT_LIMITS).build(

@@ -21,6 +21,7 @@ from math_drawing_assistant.models import (
     InputSource,
     PlotItemRequest,
     PlotKind,
+    ResolvedAspect,
     ResolvedViewport,
     ValidatedExplicitExpression,
     ViewportMode,
@@ -85,7 +86,7 @@ def test_manual_viewport_preserves_all_bounds_aspect_and_source_without_probe(
         -2.0,
         8.0,
     )
-    assert viewport.aspect is AspectRequest.EQUAL
+    assert viewport.aspect is ResolvedAspect.EQUAL
     assert viewport.source is ViewportSource.MANUAL
 
 
@@ -119,7 +120,7 @@ def test_auto_default_x_and_robust_probe_return_probe_source() -> None:
     assert (viewport.x_min, viewport.x_max) == (-10.0, 10.0)
     assert viewport.y_min < -9.0
     assert viewport.y_max > 9.0
-    assert viewport.aspect is AspectRequest.EQUAL
+    assert viewport.aspect is ResolvedAspect.EQUAL
     assert viewport.source is ViewportSource.AUTO_PROBE
 
 

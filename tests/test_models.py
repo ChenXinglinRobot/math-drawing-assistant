@@ -18,6 +18,7 @@ from math_drawing_assistant.models import (
     PlotSceneResult,
     PlotSceneSpec,
     RenderPlan,
+    ResolvedAspect,
     ResolvedViewport,
     TaskPhase,
     ViewportMode,
@@ -55,7 +56,7 @@ def _resolved_viewport() -> ResolvedViewport:
         x_max=5,
         y_min=-4,
         y_max=4,
-        aspect=AspectRequest.EQUAL,
+        aspect=ResolvedAspect.EQUAL,
         source=ViewportSource.MANUAL,
     )
 
@@ -192,7 +193,7 @@ def test_resolved_viewport_rejects_invalid_final_ranges(
         "x_max": 1.0,
         "y_min": -1.0,
         "y_max": 1.0,
-        "aspect": AspectRequest.AUTO,
+        "aspect": ResolvedAspect.AUTO,
         "source": ViewportSource.AUTO_PROBE,
     }
     resolved_kwargs.update(kwargs)
@@ -212,11 +213,12 @@ def test_task_phase_has_only_the_six_approved_values() -> None:
     ]
 
 
-def test_viewport_source_has_only_manual_probe_and_fallback_origins() -> None:
+def test_viewport_source_includes_the_reserved_geometry_origin() -> None:
     assert [source.name for source in ViewportSource] == [
         "MANUAL",
         "AUTO_PROBE",
         "AUTO_FALLBACK",
+        "AUTO_GEOMETRY",
     ]
 
 

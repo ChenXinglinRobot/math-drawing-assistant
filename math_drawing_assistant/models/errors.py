@@ -53,6 +53,7 @@ class ErrorCode(str, Enum):
     INVALID_VIEWPORT = "invalid_viewport"
     VIEWPORT_PROBE_BUDGET_EXCEEDED = "viewport_probe_budget_exceeded"
     NO_VISIBLE_CURVE = "no_visible_curve"
+    NUMERIC_RANGE_UNSUPPORTED = "numeric_range_unsupported"
 
 
 class ViewportWarningCode(str, Enum):
