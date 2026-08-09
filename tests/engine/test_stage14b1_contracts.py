@@ -440,6 +440,68 @@ def test_approval_rejects_version_memory_and_spec_plan_crosses() -> None:
         render_plan_model._approve_render_plan(ordinary_explicit)
 
 
+def test_approval_rejects_geometry_mathematical_branch_count_mismatch() -> None:
+    valid_plan = _approved_geometry_plan("x^2+y^2=25")
+    assert type(valid_plan.item_plan) is GeometryRenderItemPlan
+    invalid_item_plan = replace(
+        valid_plan.item_plan,
+        mathematical_branch_count=2,
+    )
+    invalid_plan = replace(valid_plan, item_plan=invalid_item_plan)
+
+    with pytest.raises(
+        ValueError,
+        match="geometry mathematical branch count is invalid",
+    ):
+        render_plan_model._approve_render_plan(invalid_plan)
+
+
+def test_approval_rejects_geometry_drawable_segment_capacity_mismatch() -> None:
+    valid_plan = _approved_geometry_plan("x^2+y^2=25")
+    assert type(valid_plan.item_plan) is GeometryRenderItemPlan
+    invalid_item_plan = replace(
+        valid_plan.item_plan,
+        max_segment_count=5,
+    )
+    invalid_plan = replace(valid_plan, item_plan=invalid_item_plan)
+
+    with pytest.raises(
+        ValueError,
+        match="geometry drawable segment capacity is invalid",
+    ):
+        render_plan_model._approve_render_plan(invalid_plan)
+
+
+def test_approval_rejects_geometry_item_identity_mismatch() -> None:
+    valid_plan = _approved_geometry_plan("x^2+y^2=25")
+    assert type(valid_plan.item_plan) is GeometryRenderItemPlan
+    invalid_item_plan = replace(
+        valid_plan.item_plan,
+        item_id="different-item",
+    )
+    invalid_plan = replace(valid_plan, item_plan=invalid_item_plan)
+
+    with pytest.raises(
+        ValueError,
+        match="Spec and item plan identities do not match",
+    ):
+        render_plan_model._approve_render_plan(invalid_plan)
+
+
+def test_approval_rejects_missing_explicit_numeric_executor_version() -> None:
+    valid_plan = _explicit_plan()
+    invalid_plan = replace(
+        valid_plan,
+        numeric_executor_contract_version=None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="explicit plan numeric executor contract version is invalid",
+    ):
+        render_plan_model._approve_render_plan(invalid_plan)
+
+
 def test_builder_geometry_failure_precedes_numeric_cost_and_has_no_bypass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
