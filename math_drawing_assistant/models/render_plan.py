@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from fractions import Fraction
-from math import isfinite
+from math import isfinite, tau
 from typing import Final, TypeAlias
 
 from math_drawing_assistant.models.errors import SourceSpan
@@ -163,6 +163,71 @@ DEFAULT_LINE_SAMPLING_POLICY: Final[LineSamplingPolicy] = LineSamplingPolicy(
     target_residual_ulps=4,
     maximum_residual_ulps=16,
     cancellation_check_interval=1,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AngularSamplingPolicy:
+    """Scalar-only active policy for exact circle and ellipse sampling."""
+
+    version: str
+    samples_per_pixel: int
+    minimum_open_segment_samples: int
+    minimum_closed_curve_samples: int
+    preferred_batch_points: int
+    angle_merge_ulps: int
+    viewport_boundary_ulps: int
+    target_residual_ulps: int
+    maximum_residual_ulps: int
+    cancellation_check_interval: int
+
+    def __post_init__(self) -> None:
+        _nonempty_version(self.version, "version")
+        for name in (
+            "samples_per_pixel",
+            "minimum_open_segment_samples",
+            "minimum_closed_curve_samples",
+            "preferred_batch_points",
+            "angle_merge_ulps",
+            "viewport_boundary_ulps",
+            "target_residual_ulps",
+            "maximum_residual_ulps",
+            "cancellation_check_interval",
+        ):
+            _positive_int(getattr(self, name), name)
+        if self.minimum_open_segment_samples < 2:
+            raise ValueError("open angular segments need at least two samples.")
+        if self.minimum_closed_curve_samples < 3:
+            raise ValueError("closed angular curves need at least three samples.")
+        if self.target_residual_ulps >= self.maximum_residual_ulps:
+            raise ValueError("target residual must be below the maximum residual.")
+        if self.version == "angular-sampling-policy-v1" and (
+            self.samples_per_pixel,
+            self.minimum_open_segment_samples,
+            self.minimum_closed_curve_samples,
+            self.preferred_batch_points,
+            self.angle_merge_ulps,
+            self.viewport_boundary_ulps,
+            self.target_residual_ulps,
+            self.maximum_residual_ulps,
+            self.cancellation_check_interval,
+        ) != (1, 2, 64, 4_096, 8, 8, 32, 256, 256):
+            raise ValueError("angular-sampling-policy-v1 semantics are fixed.")
+
+
+DEFAULT_ANGULAR_SAMPLING_POLICY: Final[AngularSamplingPolicy] = (
+    AngularSamplingPolicy(
+        version="angular-sampling-policy-v1",
+        samples_per_pixel=1,
+        minimum_open_segment_samples=2,
+        minimum_closed_curve_samples=64,
+        preferred_batch_points=4_096,
+        angle_merge_ulps=8,
+        viewport_boundary_ulps=8,
+        target_residual_ulps=32,
+        maximum_residual_ulps=256,
+        cancellation_check_interval=256,
+    )
 )
 
 
@@ -1018,6 +1083,10 @@ def _validate_cross_plan_contracts(plan: RenderPlan) -> None:
                 raise ValueError("line sample count is invalid.")
             if item_plan.batch_size != DEFAULT_LINE_SAMPLING_POLICY.batch_size:
                 raise ValueError("line batch size is invalid.")
+        elif type(item) in {CircleSpec, EllipseSpec}:
+            if plan.sampling_policy_version != DEFAULT_ANGULAR_SAMPLING_POLICY.version:
+                raise ValueError("angular sampling policy version is not active.")
+            _validate_oval_parameter_plan(item_plan)
         expected_branch_count, expected_capacity, expected_segment_type = (
             _geometry_approval_shape(type(item))
         )
@@ -1045,6 +1114,68 @@ def _geometry_approval_shape(spec_type: type[object]) -> tuple[int, int, type[ob
     if spec_type is ParabolaSpec:
         return (1, 2, ParameterIntervalPlan)
     raise TypeError("geometry Spec exact type is unsupported.")
+
+
+def _validate_oval_parameter_plan(item_plan: GeometryRenderItemPlan) -> None:
+    policy = DEFAULT_ANGULAR_SAMPLING_POLICY
+    intervals = item_plan.segments
+    if any(type(interval) is not ParameterIntervalPlan for interval in intervals):
+        raise TypeError("circle and ellipse plans require exact parameter intervals.")
+    typed_intervals = tuple(intervals)
+    if any(interval.mathematical_branch_id != 0 for interval in typed_intervals):
+        raise ValueError("circle and ellipse intervals require mathematical branch zero.")
+    if (
+        tuple(sorted(typed_intervals, key=lambda value: value.parameter_start))
+        != typed_intervals
+    ):
+        raise ValueError("circle and ellipse intervals must be stably ordered.")
+    if item_plan.batch_size > policy.preferred_batch_points:
+        raise ValueError("circle and ellipse batch size exceeds the active policy.")
+
+    closed = tuple(
+        interval
+        for interval in typed_intervals
+        if interval.closure is SegmentClosure.CLOSED
+    )
+    if closed:
+        if len(typed_intervals) != 1 or len(closed) != 1:
+            raise ValueError("a closed circle or ellipse plan must contain one interval.")
+        interval = closed[0]
+        if interval.parameter_start != 0.0 or interval.parameter_stop != tau:
+            raise ValueError("a closed circle or ellipse interval must be exactly [0, 2*pi].")
+        if interval.sample_count < policy.minimum_closed_curve_samples:
+            raise ValueError("closed circle and ellipse sampling is below the active minimum.")
+        return
+
+    crossing_interval: ParameterIntervalPlan | None = None
+    previous_stop: float | None = None
+    for index, interval in enumerate(typed_intervals):
+        if interval.closure is not SegmentClosure.OPEN:
+            raise ValueError("partial circle and ellipse intervals must be open.")
+        if not 0.0 <= interval.parameter_start < tau:
+            raise ValueError("open angular interval starts must be normalized to one turn.")
+        span = interval.parameter_stop - interval.parameter_start
+        if not 0.0 < span < tau:
+            raise ValueError("open angular intervals must be shorter than one turn.")
+        if previous_stop is not None and interval.parameter_start < previous_stop:
+            raise ValueError("open angular intervals must not overlap.")
+        if interval.parameter_stop > tau:
+            if crossing_interval is not None or index != len(typed_intervals) - 1:
+                raise ValueError("only the final visible interval may cross the seam.")
+            crossing_interval = interval
+            if interval.parameter_stop >= 2.0 * tau:
+                raise ValueError("expanded angular intervals must end before two turns.")
+        else:
+            previous_stop = interval.parameter_stop
+        if interval.sample_count < policy.minimum_open_segment_samples:
+            raise ValueError("open circle and ellipse sampling is below the active minimum.")
+    if (
+        crossing_interval is not None
+        and len(typed_intervals) > 1
+        and crossing_interval.parameter_stop - tau
+        > typed_intervals[0].parameter_start
+    ):
+        raise ValueError("expanded angular interval overlaps the first visible interval.")
 
 
 def _validate_geometry_nested(
@@ -1171,6 +1302,8 @@ def _snapshot_approved_render_plan(value: object) -> _ApprovedRenderPlanSnapshot
 
 
 __all__ = [
+    "AngularSamplingPolicy",
+    "DEFAULT_ANGULAR_SAMPLING_POLICY",
     "DEFAULT_EXPLICIT_SAMPLING_POLICY",
     "DEFAULT_LINE_SAMPLING_POLICY",
     "ExplicitRenderItemPlan",

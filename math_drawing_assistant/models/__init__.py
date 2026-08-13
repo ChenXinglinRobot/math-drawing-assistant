@@ -34,6 +34,8 @@ from math_drawing_assistant.models.restricted_ast import (
     VariableName,
 )
 from math_drawing_assistant.models.render_plan import (
+    AngularSamplingPolicy,
+    DEFAULT_ANGULAR_SAMPLING_POLICY,
     DEFAULT_EXPLICIT_SAMPLING_POLICY,
     DEFAULT_LINE_SAMPLING_POLICY,
     RENDER_PLAN_CONTRACT_VERSION,
@@ -66,6 +68,7 @@ from math_drawing_assistant.models.state import (
 from math_drawing_assistant.models.viewport import ResolvedViewport, ViewportRequest
 
 __all__ = [
+    "AngularSamplingPolicy",
     "AspectRequest",
     "AxisOrientation",
     "CircleSpec",
@@ -104,6 +107,7 @@ __all__ = [
     "ParameterIntervalPlan",
     "ParameterizedRenderMemoryBudget",
     "NumberNode",
+    "DEFAULT_ANGULAR_SAMPLING_POLICY",
     "DEFAULT_EXPLICIT_SAMPLING_POLICY",
     "DEFAULT_LINE_SAMPLING_POLICY",
     "RENDER_PLAN_CONTRACT_VERSION",

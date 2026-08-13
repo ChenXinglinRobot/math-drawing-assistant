@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 from fractions import Fraction
 from inspect import signature
+from math import tau
 from pathlib import Path
 from typing import get_args
 
@@ -35,6 +36,7 @@ from math_drawing_assistant.models import (
     AspectRequest,
     AxisOrientation,
     CircleSpec,
+    DEFAULT_ANGULAR_SAMPLING_POLICY,
     DEFAULT_LINE_SAMPLING_POLICY,
     EllipseSpec,
     ErrorCode,
@@ -159,6 +161,18 @@ def _geometry_item_plan(spec: PlotItemSpec) -> GeometryRenderItemPlan:
         )
         branches = 1
         capacity = 1
+    elif type(spec) in {CircleSpec, EllipseSpec}:
+        segments = (
+            ParameterIntervalPlan(
+                mathematical_branch_id=0,
+                parameter_start=0.0,
+                parameter_stop=tau,
+                sample_count=64,
+                closure=SegmentClosure.CLOSED,
+            ),
+        )
+        branches = 1
+        capacity = 4
     else:
         intervals = [
             ParameterIntervalPlan(
@@ -212,7 +226,11 @@ def _approved_geometry_plan(text: str) -> RenderPlan:
         sampling_policy_version=(
             DEFAULT_LINE_SAMPLING_POLICY.version
             if type(spec) is LineSpec
-            else "parameterized-policy-test"
+            else (
+                DEFAULT_ANGULAR_SAMPLING_POLICY.version
+                if type(spec) in {CircleSpec, EllipseSpec}
+                else "parameterized-policy-test"
+            )
         ),
         numeric_executor_contract_version=None,
         parameterized_sampler_contract_version=(
@@ -330,7 +348,7 @@ def test_manual_geometry_resolves_without_probe_or_fallback(
     assert result.viewport.source is ViewportSource.MANUAL
 
 
-@pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES[1:]])
+@pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES[3:]])
 def test_auto_geometry_is_nonrecoverable_strategy_failure_before_probe(
     text: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -349,6 +367,24 @@ def test_auto_geometry_is_nonrecoverable_strategy_failure_before_probe(
     assert result.error.field_name == "viewport_strategy"
     assert result.error.recoverable is False
     assert result.warning is None
+
+
+@pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES[1:3]])
+def test_auto_circle_and_ellipse_use_geometry_without_explicit_probe(
+    text: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(*args: object, **kwargs: object) -> object:
+        raise AssertionError("oval auto geometry must not use the explicit probe")
+
+    monkeypatch.setattr(viewport_resolver.np, "linspace", forbidden)
+    monkeypatch.setattr(viewport_resolver, "execute_explicit_function", forbidden)
+    monkeypatch.setattr(viewport_resolver, "estimate_numeric_execution_cost", forbidden)
+
+    result = resolve_single_item_viewport(_scene(text), ViewportRequest())
+    assert result.error is None
+    assert result.viewport is not None
+    assert result.viewport.source is ViewportSource.AUTO_GEOMETRY
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,13 +482,31 @@ def test_approval_rejects_version_memory_and_spec_plan_crosses() -> None:
         render_plan_model._approve_render_plan(ordinary_explicit)
 
 
-@pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES[1:]])
-def test_parameterized_sampler_keeps_all_conics_behind_strategy_error(
+@pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES[3:]])
+def test_parameterized_sampler_keeps_unimplemented_conics_behind_strategy_error(
     text: str,
 ) -> None:
     result = sample_parameterized_curve(_approved_geometry_plan(text))
     assert type(result) is ErrorInfo
     assert result.code is ErrorCode.INTERNAL_ERROR
+
+
+@pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES[1:3]])
+def test_parameterized_sampler_accepts_builder_approved_circle_and_ellipse(
+    text: str,
+) -> None:
+    plan = RenderPlanBuilder().build(
+        _scene(text),
+        _viewport(),
+        image_width=800,
+        image_height=600,
+        dpi=96,
+        show_grid=True,
+        show_legend=False,
+    )
+    assert type(plan) is RenderPlan
+    result = sample_parameterized_curve(plan)
+    assert type(result) is SampledParameterizedCurve
 
 
 def test_approval_rejects_geometry_mathematical_branch_count_mismatch() -> None:
@@ -525,7 +579,7 @@ def test_builder_geometry_failure_precedes_numeric_cost_and_has_no_bypass(
 
     monkeypatch.setattr(render_plan_builder, "estimate_numeric_execution_cost", forbidden)
     result = RenderPlanBuilder().build(
-        _scene("x^2+y^2=25"),
+        _scene("4*x^2-9*y^2=36"),
         _viewport(),
         image_width=800,
         image_height=600,

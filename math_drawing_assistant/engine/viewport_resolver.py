@@ -17,7 +17,9 @@ from math_drawing_assistant.engine.numeric_executor import (
 )
 from math_drawing_assistant.engine.parameterized_budget import (
     estimate_line_exact_workspace_bytes,
+    estimate_oval_exact_workspace_bytes,
 )
+from math_drawing_assistant.engine.oval_geometry import project_oval_geometry
 from math_drawing_assistant.models.errors import (
     ErrorCode,
     ErrorInfo,
@@ -102,6 +104,8 @@ def resolve_single_item_viewport(
         return _resolve_auto(spec, request, aspect=aspect, limits=limits)
     if type(spec) is LineSpec:
         return _resolve_auto_line(spec, request, aspect=aspect, limits=limits)
+    if type(spec) in {CircleSpec, EllipseSpec}:
+        return _resolve_auto_oval(spec, request, aspect=aspect, limits=limits)
     return _failure(
         _contract_error(
             "viewport_strategy",
@@ -495,6 +499,142 @@ def _resolve_auto_line(
     return ViewportResolution(viewport=resolved_or_error)
 
 
+def _resolve_auto_oval(
+    spec: CircleSpec | EllipseSpec,
+    request: ViewportRequest,
+    *,
+    aspect: ResolvedAspect,
+    limits: ApplicationLimits,
+) -> ViewportResolution:
+    """Resolve one complete exact circle or ellipse without probing or fallback."""
+
+    for name in ("x_min", "x_max", "y_min", "y_max"):
+        if getattr(request, name) is not None:
+            return _failure(
+                _invalid_viewport(
+                    name,
+                    "automatic circle and ellipse viewports derive all four bounds",
+                ),
+            )
+    try:
+        exact_workspace_bytes = estimate_oval_exact_workspace_bytes(limits)
+    except MemoryError:
+        return _failure(_oval_probe_budget_error(spec.item_id, "workspace estimate failed"))
+    except (AttributeError, TypeError, ValueError):
+        return _failure(
+            _contract_error(
+                "viewport_limits",
+                "oval exact-workspace contract mismatch",
+                item_id=spec.item_id,
+            ),
+        )
+    if exact_workspace_bytes > limits.max_viewport_probe_bytes:
+        return _failure(
+            _oval_probe_budget_error(
+                spec.item_id,
+                "oval exact workspace exceeds max_viewport_probe_bytes",
+            ),
+        )
+
+    try:
+        geometry = project_oval_geometry(spec)
+        x_bounds = _fit_oval_axis(
+            geometry.x_lower,
+            geometry.x_upper,
+            limits=limits,
+        )
+        y_bounds = _fit_oval_axis(
+            geometry.y_lower,
+            geometry.y_upper,
+            limits=limits,
+        )
+    except MemoryError:
+        return _failure(_oval_probe_budget_error(spec.item_id, "exact oval workspace failed"))
+    except (AttributeError, OverflowError, TypeError, ValueError):
+        return _failure(
+            _oval_numeric_range_error(
+                spec.item_id,
+                "exact oval geometry cannot be represented as finite float64",
+            ),
+        )
+    if x_bounds is None or y_bounds is None:
+        return _failure(
+            _oval_numeric_range_error(
+                spec.item_id,
+                "complete oval bounds cannot fit the configured viewport limits",
+            ),
+        )
+    resolved_or_error = _resolved_viewport(
+        x_bounds[0],
+        x_bounds[1],
+        y_bounds[0],
+        y_bounds[1],
+        aspect,
+        ViewportSource.AUTO_GEOMETRY,
+        limits=limits,
+    )
+    if isinstance(resolved_or_error, ErrorInfo):
+        return _failure(
+            _oval_numeric_range_error(
+                spec.item_id,
+                "derived oval viewport is outside the configured finite range",
+            ),
+        )
+    return ViewportResolution(viewport=resolved_or_error)
+
+
+def _fit_oval_axis(
+    data_lower: float,
+    data_upper: float,
+    *,
+    limits: ApplicationLimits,
+) -> tuple[float, float] | None:
+    """Pad one outward geometry range and translate at absolute limits without shrinking."""
+
+    if not isfinite(data_lower) or not isfinite(data_upper) or data_lower >= data_upper:
+        return None
+    absolute_limit = float(limits.max_viewport_absolute_coordinate)
+    if data_lower < -absolute_limit or data_upper > absolute_limit:
+        return None
+    data_span = data_upper - data_lower
+    if not isfinite(data_span) or data_span <= 0.0:
+        return None
+    padding = max(
+        float(limits.viewport_absolute_padding),
+        data_span * float(limits.viewport_relative_padding_percent) / 100.0,
+    )
+    chosen_span = max(
+        float(limits.min_viewport_span),
+        2.0 * float(limits.viewport_absolute_padding),
+        data_span + 2.0 * padding,
+    )
+    if not isfinite(chosen_span) or chosen_span > limits.max_viewport_span:
+        return None
+    center = data_lower + data_span / 2.0
+    lower = center - chosen_span / 2.0
+    upper = center + chosen_span / 2.0
+    if lower < -absolute_limit:
+        upper += -absolute_limit - lower
+        lower = -absolute_limit
+    if upper > absolute_limit:
+        lower += absolute_limit - upper
+        upper = absolute_limit
+    lower = min(lower, data_lower)
+    upper = max(upper, data_upper)
+    span = upper - lower
+    if (
+        not isfinite(lower)
+        or not isfinite(upper)
+        or lower >= upper
+        or lower < -absolute_limit
+        or upper > absolute_limit
+        or span < limits.min_viewport_span
+        or span > limits.max_viewport_span
+    ):
+        return None
+    return (lower, upper)
+
+
 def _bounded_exact_centered_range(
     center: Fraction,
     span: Fraction,
@@ -848,6 +988,28 @@ def _line_probe_budget_error(item_id: str, technical_message: str) -> ErrorInfo:
         technical_message=technical_message,
         item_id=item_id,
         field_name="max_viewport_probe_bytes",
+        recoverable=True,
+    )
+
+
+def _oval_probe_budget_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.VIEWPORT_PROBE_BUDGET_EXCEEDED,
+        user_message="Automatic circle or ellipse viewport calculation exceeds the configured budget.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="max_viewport_probe_bytes",
+        recoverable=True,
+    )
+
+
+def _oval_numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
+        user_message="The circle or ellipse is outside the currently supported numeric range.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="viewport_numeric_range",
         recoverable=True,
     )
 

@@ -50,6 +50,7 @@ _STAGE_13_MODEL_EXPORTS = frozenset(
 
 _EXPECTED_MODEL_EXPORTS = frozenset(
     {
+        "AngularSamplingPolicy",
         "AspectRequest",
         "AxisOrientation",
         "BinaryOpNode",
@@ -57,6 +58,7 @@ _EXPECTED_MODEL_EXPORTS = frozenset(
         "CircleSpec",
         "ConstantName",
         "ConstantNode",
+        "DEFAULT_ANGULAR_SAMPLING_POLICY",
         "DEFAULT_EXPLICIT_SAMPLING_POLICY",
         "DEFAULT_LINE_SAMPLING_POLICY",
         "EllipseSpec",

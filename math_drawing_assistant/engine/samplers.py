@@ -25,6 +25,13 @@ from math_drawing_assistant.engine.numeric_executor import (
 )
 from math_drawing_assistant.engine.parameterized_budget import (
     build_line_parameterized_memory_budget,
+    build_oval_parameterized_memory_budget,
+)
+from math_drawing_assistant.engine.oval_geometry import (
+    OvalExecutionGeometry,
+    normalized_oval_residual,
+    oval_parameter_point,
+    project_oval_geometry,
 )
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo
 from math_drawing_assistant.models.plot_specs import (
@@ -37,14 +44,17 @@ from math_drawing_assistant.models.plot_specs import (
     PlotSceneSpec,
 )
 from math_drawing_assistant.models.render_plan import (
+    DEFAULT_ANGULAR_SAMPLING_POLICY,
     DEFAULT_EXPLICIT_SAMPLING_POLICY,
     DEFAULT_LINE_SAMPLING_POLICY,
     PARAMETERIZED_SAMPLER_CONTRACT_VERSION,
+    AngularSamplingPolicy,
     ExplicitRenderItemPlan,
     ExplicitSamplingPolicy,
     GeometryRenderItemPlan,
     LineSamplingPolicy,
     LineSegmentPlan,
+    ParameterIntervalPlan,
     ParameterizedRenderMemoryBudget,
     RenderMemoryBudget,
     RenderPlan,
@@ -432,6 +442,19 @@ class _ParameterizedSamplingContext:
 
 
 @dataclass(frozen=True, slots=True)
+class _OvalSamplingContext:
+    plan: RenderPlan
+    spec: CircleSpec | EllipseSpec
+    viewport: ResolvedViewport
+    item_plan: GeometryRenderItemPlan
+    intervals: tuple[ParameterIntervalPlan, ...]
+    memory_budget: ParameterizedRenderMemoryBudget
+    limits: ApplicationLimits
+    policy: AngularSamplingPolicy
+    geometry: OvalExecutionGeometry
+
+
+@dataclass(frozen=True, slots=True)
 class _SegmentScan:
     ranges: tuple[tuple[int, int], ...]
     finite_sample_count: int
@@ -480,7 +503,7 @@ def sample_parameterized_curve(
     *,
     cancellation_probe: CancellationProbe | None = None,
 ) -> SamplingOutcome:
-    """Sample the sole exact general line from one approved geometry plan."""
+    """Sample the sole approved line, circle, or ellipse geometry plan."""
 
     # Approval is intentionally the first operation at this public boundary.
     try:
@@ -510,6 +533,13 @@ def _sample_approved_parameterized_curve(
         return cancelled_or_error
     if cancelled_or_error:
         return SamplingCancelled(item_id)
+
+    spec = approved_plan.scene_spec.items[0]
+    if type(spec) in {CircleSpec, EllipseSpec}:
+        return _sample_approved_oval_curve(
+            approved_plan,
+            cancellation_probe=cancellation_probe,
+        )
 
     context_or_error = _validated_parameterized_sampling_context(approved_plan)
     if isinstance(context_or_error, ErrorInfo):
@@ -658,6 +688,419 @@ def _sample_approved_parameterized_curve(
             context.spec.item_id,
             "frozen parameterized sampling result contract failed",
         )
+
+
+def _sample_approved_oval_curve(
+    approved_plan: RenderPlan,
+    *,
+    cancellation_probe: CancellationProbe | None,
+) -> SamplingOutcome:
+    """Execute one approved Circle/Ellipse plan in bounded angular batches."""
+
+    context_or_error = _validated_oval_sampling_context(approved_plan)
+    if isinstance(context_or_error, ErrorInfo):
+        return context_or_error
+    context = context_or_error
+
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    segment_count = len(context.intervals)
+    try:
+        x = np.empty(context.item_plan.sample_count, dtype=np.float64)
+        y = np.empty(context.item_plan.sample_count, dtype=np.float64)
+        segment_ranges = np.empty((segment_count, 2), dtype=np.int64)
+    except MemoryError:
+        return _allocation_error(context.spec.item_id, "formal oval output allocation failed")
+    except (TypeError, ValueError):
+        return _contract_error(context.spec.item_id, "formal oval output allocation failed")
+    if not _owned_writable_vector(x, context.item_plan.sample_count):
+        return _contract_error(context.spec.item_id, "formal oval x allocation is invalid")
+    if not _owned_writable_vector(y, context.item_plan.sample_count):
+        return _contract_error(context.spec.item_id, "formal oval y allocation is invalid")
+    if (
+        type(segment_ranges) is not np.ndarray
+        or segment_ranges.dtype != np.dtype(np.int64)
+        or segment_ranges.shape != (segment_count, 2)
+        or not segment_ranges.flags.owndata
+        or not segment_ranges.flags.writeable
+    ):
+        return _contract_error(context.spec.item_id, "oval segment ranges are invalid")
+
+    offset = 0
+    precision_limited_segment_count = 0
+    for segment_index, interval in enumerate(context.intervals):
+        cancelled_or_error = _poll_cancellation(
+            cancellation_probe,
+            item_id=context.spec.item_id,
+        )
+        if isinstance(cancelled_or_error, ErrorInfo):
+            return cancelled_or_error
+        if cancelled_or_error:
+            return SamplingCancelled(context.spec.item_id)
+
+        segment_start = offset
+        segment_stop = segment_start + interval.sample_count
+        segment_ranges[segment_index, 0] = segment_start
+        segment_ranges[segment_index, 1] = segment_stop
+        interval_span = interval.parameter_stop - interval.parameter_start
+        denominator = (
+            interval.sample_count
+            if interval.closure is SegmentClosure.CLOSED
+            else interval.sample_count - 1
+        )
+        precision_limited = False
+        validation_since_poll = 0
+
+        for batch_start in range(0, interval.sample_count, context.item_plan.batch_size):
+            batch_stop = min(
+                interval.sample_count,
+                batch_start + context.item_plan.batch_size,
+            )
+            cancelled_or_error = _poll_cancellation(
+                cancellation_probe,
+                item_id=context.spec.item_id,
+            )
+            if isinstance(cancelled_or_error, ErrorInfo):
+                return cancelled_or_error
+            if cancelled_or_error:
+                return SamplingCancelled(context.spec.item_id)
+
+            try:
+                # Absolute interval indices keep results invariant across batch sizes.
+                theta = np.arange(batch_start, batch_stop, dtype=np.float64)
+                np.divide(theta, denominator, out=theta)
+                np.multiply(theta, interval_span, out=theta)
+                np.add(theta, interval.parameter_start, out=theta)
+                if batch_start == 0:
+                    theta[0] = interval.parameter_start
+                if (
+                    interval.closure is SegmentClosure.OPEN
+                    and batch_stop == interval.sample_count
+                ):
+                    theta[-1] = interval.parameter_stop
+                cosine = np.cos(theta)
+                sine = np.sin(theta)
+                destination = slice(
+                    segment_start + batch_start,
+                    segment_start + batch_stop,
+                )
+                np.multiply(cosine, context.geometry.semi_axis_x_float, out=x[destination])
+                np.add(x[destination], context.geometry.center_x_float, out=x[destination])
+                np.multiply(sine, context.geometry.semi_axis_y_float, out=y[destination])
+                np.add(y[destination], context.geometry.center_y_float, out=y[destination])
+
+                if batch_start == 0:
+                    x[segment_start], y[segment_start] = _oval_scalar_point(
+                        context.geometry,
+                        interval.parameter_start,
+                    )
+                if (
+                    interval.closure is SegmentClosure.OPEN
+                    and batch_stop == interval.sample_count
+                ):
+                    x[segment_stop - 1], y[segment_stop - 1] = _oval_scalar_point(
+                        context.geometry,
+                        interval.parameter_stop,
+                    )
+
+                finite = np.empty(theta.shape, dtype=np.bool_)
+                np.isfinite(theta, out=finite)
+                all_finite = bool(np.all(finite))
+                np.isfinite(x[destination], out=finite)
+                all_finite = all_finite and bool(np.all(finite))
+                np.isfinite(y[destination], out=finite)
+                all_finite = all_finite and bool(np.all(finite))
+                if not all_finite:
+                    return _oval_numeric_range_error(
+                        context.spec.item_id,
+                        "oval angular batch produced a non-finite sample",
+                    )
+            except MemoryError:
+                return _allocation_error(
+                    context.spec.item_id,
+                    "oval angular batch allocation failed",
+                )
+            except (FloatingPointError, IndexError, OverflowError, TypeError, ValueError):
+                return _oval_numeric_range_error(
+                    context.spec.item_id,
+                    "oval angular batch execution failed",
+                )
+
+            cancelled_or_error = _poll_cancellation(
+                cancellation_probe,
+                item_id=context.spec.item_id,
+            )
+            if isinstance(cancelled_or_error, ErrorInfo):
+                return cancelled_or_error
+            if cancelled_or_error:
+                return SamplingCancelled(context.spec.item_id)
+
+            for sample_index in range(destination.start, destination.stop):
+                if validation_since_poll >= context.policy.cancellation_check_interval:
+                    cancelled_or_error = _poll_cancellation(
+                        cancellation_probe,
+                        item_id=context.spec.item_id,
+                    )
+                    if isinstance(cancelled_or_error, ErrorInfo):
+                        return cancelled_or_error
+                    if cancelled_or_error:
+                        return SamplingCancelled(context.spec.item_id)
+                    validation_since_poll = 0
+                try:
+                    residual = normalized_oval_residual(
+                        context.geometry,
+                        float(x[sample_index]),
+                        float(y[sample_index]),
+                    )
+                except MemoryError:
+                    return _allocation_error(
+                        context.spec.item_id,
+                        "oval exact residual allocation failed",
+                    )
+                except (AttributeError, OverflowError, TypeError, ValueError, ZeroDivisionError):
+                    return _oval_numeric_range_error(
+                        context.spec.item_id,
+                        "oval exact residual validation failed",
+                    )
+                if residual > context.policy.maximum_residual_ulps * _FLOAT64_EPSILON:
+                    return _oval_numeric_range_error(
+                        context.spec.item_id,
+                        "approved oval residual exceeds the hard threshold",
+                    )
+                if residual > context.policy.target_residual_ulps * _FLOAT64_EPSILON:
+                    precision_limited = True
+                validation_since_poll += 1
+
+        if not _segment_contains_distinct_adjacent_points(x, y, segment_start, segment_stop):
+            return _no_visible_error(
+                context.spec.item_id,
+                NoVisibleCurveReason.NO_DRAWABLE_SEGMENT,
+            )
+        if precision_limited:
+            precision_limited_segment_count += 1
+        offset = segment_stop
+
+    if offset != context.item_plan.sample_count:
+        return _contract_error(context.spec.item_id, "oval sample ranges do not fill output")
+
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    try:
+        metadata = tuple(
+            SampledSegmentMetadata(
+                mathematical_branch_id=interval.mathematical_branch_id,
+                closure=interval.closure,
+            )
+            for interval in context.intervals
+        )
+        diagnostics = ParameterizedSamplingDiagnostics(
+            sampled_segment_count=segment_count,
+            sampled_point_count=context.item_plan.sample_count,
+        )
+        warnings: list[SamplingWarning] = []
+        clipped_segment_count = sum(
+            interval.closure is SegmentClosure.OPEN for interval in context.intervals
+        )
+        if clipped_segment_count:
+            warnings.append(
+                SamplingWarning(
+                    code=SamplingWarningCode.VIEWPORT_CLIPPED,
+                    metrics=ViewportClippedMetrics(
+                        clipped_segment_count=clipped_segment_count,
+                    ),
+                ),
+            )
+        if precision_limited_segment_count:
+            warnings.append(
+                SamplingWarning(
+                    code=SamplingWarningCode.SAMPLING_PRECISION_LIMITED,
+                    metrics=SamplingPrecisionLimitedMetrics(
+                        limited_segment_count=precision_limited_segment_count,
+                    ),
+                ),
+            )
+    except MemoryError:
+        return _allocation_error(context.spec.item_id, "oval metadata allocation failed")
+    except (AttributeError, TypeError, ValueError):
+        return _contract_error(context.spec.item_id, "oval metadata construction failed")
+
+    x.setflags(write=False)
+    y.setflags(write=False)
+    segment_ranges.setflags(write=False)
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    try:
+        sampled = SampledParameterizedCurve(
+            item_id=context.spec.item_id,
+            x=x,
+            y=y,
+            segment_ranges=segment_ranges,
+            segment_metadata=metadata,
+            visible_segment_count=segment_count,
+            warnings=tuple(warnings),
+            diagnostics=diagnostics,
+        )
+        object.__setattr__(
+            sampled,
+            "_plan_contract_snapshot",
+            _snapshot_approved_render_plan(context.plan),
+        )
+    except MemoryError:
+        return _allocation_error(context.spec.item_id, "oval result snapshot allocation failed")
+    except (AttributeError, TypeError, ValueError):
+        return _contract_error(
+            context.spec.item_id,
+            "frozen oval sampling result contract failed",
+        )
+
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+    return sampled
+
+
+def _validated_oval_sampling_context(
+    plan: RenderPlan,
+) -> _OvalSamplingContext | ErrorInfo:
+    limits = DEFAULT_LIMITS
+    policy = DEFAULT_ANGULAR_SAMPLING_POLICY
+    if plan.limits_version != limits.version:
+        return _contract_error(None, "render plan limits version is not active")
+    if type(plan.scene_spec) is not PlotSceneSpec or len(plan.scene_spec.items) != 1:
+        return _contract_error(None, "render plan must contain one exact scene specification")
+    spec = plan.scene_spec.items[0]
+    if type(spec) not in {CircleSpec, EllipseSpec}:
+        return _contract_error(None, "render plan item is not an exact oval specification")
+    if plan.sampling_policy_version != policy.version:
+        return _contract_error(spec.item_id, "angular sampling policy version is not active")
+    if plan.numeric_executor_contract_version is not None:
+        return _contract_error(spec.item_id, "oval plan must not carry a numeric executor version")
+    if (
+        plan.parameterized_sampler_contract_version
+        != PARAMETERIZED_SAMPLER_CONTRACT_VERSION
+    ):
+        return _contract_error(spec.item_id, "parameterized sampler version is not active")
+    if type(plan.resolved_viewport) is not ResolvedViewport:
+        return _contract_error(spec.item_id, "oval plan viewport is not exact")
+    if type(plan.item_plan) is not GeometryRenderItemPlan:
+        return _contract_error(spec.item_id, "oval item plan is missing")
+    if type(plan.memory_budget) is not ParameterizedRenderMemoryBudget:
+        return _contract_error(spec.item_id, "oval memory budget is missing")
+    item_plan = plan.item_plan
+    budget = plan.memory_budget
+    if (
+        type(item_plan.segments) is not tuple
+        or not item_plan.segments
+        or not all(type(interval) is ParameterIntervalPlan for interval in item_plan.segments)
+    ):
+        return _contract_error(spec.item_id, "oval plan requires exact parameter intervals")
+    intervals = item_plan.segments
+    try:
+        plan.scene_spec.__post_init__()
+        spec.__post_init__()
+        plan.resolved_viewport.__post_init__()
+        item_plan.__post_init__()
+        for interval in intervals:
+            interval.__post_init__()
+        budget.__post_init__()
+        policy.__post_init__()
+        geometry = project_oval_geometry(spec)
+        recomputed_budget = build_oval_parameterized_memory_budget(
+            sample_count=item_plan.sample_count,
+            batch_size=item_plan.batch_size,
+            image_width=plan.image_width,
+            image_height=plan.image_height,
+            limits=limits,
+        )
+    except MemoryError:
+        return _allocation_error(spec.item_id, "oval budget revalidation allocation failed")
+    except (AttributeError, TypeError, ValueError):
+        return _contract_error(spec.item_id, "approved oval plan contains an invalid contract")
+    except (OverflowError, ZeroDivisionError):
+        return _oval_numeric_range_error(
+            spec.item_id,
+            "approved oval geometry is outside the executable float64 range",
+        )
+    if (
+        spec.provenance.limits_version != limits.version
+        or item_plan.item_id != spec.item_id
+        or item_plan.mathematical_branch_count != 1
+        or item_plan.max_segment_count != 4
+        or len(intervals) > 4
+    ):
+        return _contract_error(spec.item_id, "oval plan identity or capacity is invalid")
+    if recomputed_budget != budget:
+        return _contract_error(spec.item_id, "oval parameterized budget is not active")
+    try:
+        limits.validate_scene_resources(
+            item_count=1,
+            sample_points_per_item=item_plan.sample_count,
+            total_sample_points=item_plan.sample_count,
+            branches_per_item=4,
+            total_branches=4,
+            estimated_memory_bytes=budget.total_bytes,
+        )
+    except (TypeError, ValueError):
+        return _parameterized_resource_error(
+            spec.item_id,
+            "approved oval plan exceeds active scene resource limits",
+        )
+    return _OvalSamplingContext(
+        plan=plan,
+        spec=spec,
+        viewport=plan.resolved_viewport,
+        item_plan=item_plan,
+        intervals=intervals,
+        memory_budget=budget,
+        limits=limits,
+        policy=policy,
+        geometry=geometry,
+    )
+
+
+def _oval_scalar_point(
+    geometry: OvalExecutionGeometry,
+    theta: float,
+) -> tuple[float, float]:
+    return oval_parameter_point(geometry, theta)
+
+
+def _segment_contains_distinct_adjacent_points(
+    x: Float64Vector,
+    y: Float64Vector,
+    start: int,
+    stop: int,
+) -> bool:
+    for index in range(start + 1, stop):
+        if x[index] != x[index - 1] or y[index] != y[index - 1]:
+            return True
+    return False
 
 
 def _validated_parameterized_sampling_context(
@@ -1432,6 +1875,17 @@ def _numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
         technical_message=technical_message,
         item_id=item_id,
         field_name="line_residual",
+        recoverable=True,
+    )
+
+
+def _oval_numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
+        user_message="The circle or ellipse exceeds the supported numeric precision.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="oval_residual",
         recoverable=True,
     )
 

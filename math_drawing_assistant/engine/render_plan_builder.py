@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
-from math import isfinite, ulp
+from math import acos, asin, ceil, isfinite, pi, tau, ulp
 
 from math_drawing_assistant.config import ApplicationLimits, DEFAULT_LIMITS
 from math_drawing_assistant.engine.numeric_executor import (
@@ -14,6 +14,13 @@ from math_drawing_assistant.engine.numeric_executor import (
 )
 from math_drawing_assistant.engine.parameterized_budget import (
     build_line_parameterized_memory_budget,
+    build_oval_parameterized_memory_budget,
+    plan_oval_batch_size,
+)
+from math_drawing_assistant.engine.oval_geometry import (
+    OvalExecutionGeometry,
+    oval_parameter_point,
+    project_oval_geometry,
 )
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo
 from math_drawing_assistant.models.plot_specs import (
@@ -27,6 +34,8 @@ from math_drawing_assistant.models.plot_specs import (
     _validate_validated_explicit_expression,
 )
 from math_drawing_assistant.models.render_plan import (
+    AngularSamplingPolicy,
+    DEFAULT_ANGULAR_SAMPLING_POLICY,
     DEFAULT_EXPLICIT_SAMPLING_POLICY,
     DEFAULT_LINE_SAMPLING_POLICY,
     PARAMETERIZED_SAMPLER_CONTRACT_VERSION,
@@ -36,9 +45,11 @@ from math_drawing_assistant.models.render_plan import (
     GeometryRenderItemPlan,
     LineSamplingPolicy,
     LineSegmentPlan,
+    ParameterIntervalPlan,
     ParameterizedRenderMemoryBudget,
     RenderMemoryBudget,
     RenderPlan,
+    SegmentClosure,
     _approve_render_plan,
 )
 from math_drawing_assistant.models.state import ResolvedAspect, ViewportSource
@@ -67,6 +78,7 @@ class RenderPlanBuilder:
     limits: ApplicationLimits = DEFAULT_LIMITS
     sampling_policy: ExplicitSamplingPolicy = DEFAULT_EXPLICIT_SAMPLING_POLICY
     line_sampling_policy: LineSamplingPolicy = DEFAULT_LINE_SAMPLING_POLICY
+    angular_sampling_policy: AngularSamplingPolicy = DEFAULT_ANGULAR_SAMPLING_POLICY
 
     def build(
         self,
@@ -124,6 +136,24 @@ class RenderPlanBuilder:
                 show_legend=show_legend,
                 limits=limits,
                 policy=line_policy_or_error,
+            )
+        if type(spec) in {CircleSpec, EllipseSpec}:
+            angular_policy_or_error = _validated_angular_policy(
+                self.angular_sampling_policy,
+            )
+            if isinstance(angular_policy_or_error, ErrorInfo):
+                return angular_policy_or_error
+            return _build_oval_plan(
+                scene_spec,
+                spec,
+                resolved_viewport,
+                image_width=image_width,
+                image_height=image_height,
+                dpi=dpi,
+                show_grid=show_grid,
+                show_legend=show_legend,
+                limits=limits,
+                policy=angular_policy_or_error,
             )
         if type(spec) is not ExplicitFunctionSpec:
             return _internal_error(
@@ -278,6 +308,29 @@ def _validated_line_policy(policy: object) -> LineSamplingPolicy | ErrorInfo:
         return _internal_error(
             "line_sampling_policy",
             "line sampling policy version is not active",
+        )
+    return policy
+
+
+def _validated_angular_policy(
+    policy: object,
+) -> AngularSamplingPolicy | ErrorInfo:
+    if type(policy) is not AngularSamplingPolicy:
+        return _internal_error(
+            "angular_sampling_policy",
+            "builder requires an exact AngularSamplingPolicy",
+        )
+    try:
+        policy.__post_init__()
+    except (AttributeError, TypeError, ValueError):
+        return _internal_error(
+            "angular_sampling_policy",
+            "angular sampling policy contract mismatch",
+        )
+    if policy != DEFAULT_ANGULAR_SAMPLING_POLICY:
+        return _internal_error(
+            "angular_sampling_policy",
+            "angular sampling policy version is not active",
         )
     return policy
 
@@ -621,6 +674,373 @@ def _build_line_plan(
         )
 
 
+def _build_oval_plan(
+    scene_spec: PlotSceneSpec,
+    spec: CircleSpec | EllipseSpec,
+    resolved_viewport: ResolvedViewport,
+    *,
+    image_width: int,
+    image_height: int,
+    dpi: int,
+    show_grid: bool,
+    show_legend: bool,
+    limits: ApplicationLimits,
+    policy: AngularSamplingPolicy,
+) -> RenderPlan | ErrorInfo:
+    """Approve visible angular intervals and the complete Circle/Ellipse budget."""
+
+    try:
+        geometry = project_oval_geometry(spec)
+        interval_bounds_or_error = _plan_visible_oval_intervals(
+            geometry,
+            resolved_viewport,
+            policy=policy,
+        )
+    except MemoryError:
+        return _resource_error(
+            "max_estimated_memory_bytes",
+            "oval interval-planning workspace allocation failed",
+            item_id=spec.item_id,
+        )
+    except (AttributeError, OverflowError, TypeError, ValueError, ZeroDivisionError):
+        return _numeric_range_error_for_oval(
+            spec.item_id,
+            "oval geometry cannot be represented for interval planning",
+        )
+    if isinstance(interval_bounds_or_error, ErrorInfo):
+        return interval_bounds_or_error
+
+    intervals_or_error = _sampled_oval_intervals(
+        geometry,
+        resolved_viewport,
+        interval_bounds_or_error,
+        image_width=image_width,
+        image_height=image_height,
+        limits=limits,
+        policy=policy,
+    )
+    if isinstance(intervals_or_error, ErrorInfo):
+        return intervals_or_error
+    intervals = intervals_or_error
+    total_samples = sum(interval.sample_count for interval in intervals)
+    try:
+        batch_size = plan_oval_batch_size(
+            sample_count=total_samples,
+            preferred_batch_points=policy.preferred_batch_points,
+            image_width=image_width,
+            image_height=image_height,
+            limits=limits,
+        )
+        memory_budget = build_oval_parameterized_memory_budget(
+            sample_count=total_samples,
+            batch_size=batch_size,
+            image_width=image_width,
+            image_height=image_height,
+            limits=limits,
+        )
+        try:
+            limits.validate_scene_resources(
+                item_count=1,
+                sample_points_per_item=total_samples,
+                total_sample_points=total_samples,
+                branches_per_item=4,
+                total_branches=4,
+                estimated_memory_bytes=memory_budget.total_bytes,
+            )
+        except (TypeError, ValueError):
+            return _resource_error(
+                "oval_plan_resources",
+                "oval sampling plan exceeds active scene resource limits",
+                item_id=spec.item_id,
+            )
+        item_plan = GeometryRenderItemPlan(
+            item_id=spec.item_id,
+            mathematical_branch_count=1,
+            segments=intervals,
+            sample_count=total_samples,
+            batch_size=batch_size,
+            max_segment_count=4,
+        )
+        plan = RenderPlan(
+            scene_spec=scene_spec,
+            resolved_viewport=resolved_viewport,
+            image_width=image_width,
+            image_height=image_height,
+            dpi=dpi,
+            plan_version=RENDER_PLAN_CONTRACT_VERSION,
+            limits_version=limits.version,
+            show_grid=show_grid,
+            show_legend=show_legend,
+            sampling_policy_version=policy.version,
+            numeric_executor_contract_version=None,
+            parameterized_sampler_contract_version=(
+                PARAMETERIZED_SAMPLER_CONTRACT_VERSION
+            ),
+            item_plan=item_plan,
+            memory_budget=memory_budget,
+        )
+        return _approve_render_plan(plan)
+    except MemoryError:
+        return _resource_error(
+            "max_estimated_memory_bytes",
+            "oval plan or approval allocation failed",
+            item_id=spec.item_id,
+        )
+    except ValueError as exc:
+        if "budget cannot fit" in str(exc) or "resource" in str(exc):
+            return _resource_error(
+                "oval_plan_resources",
+                "oval sampling plan exceeds active scene resource limits",
+                item_id=spec.item_id,
+            )
+        return _internal_error(
+            "render_plan",
+            "approved oval render-plan contract construction failed",
+            item_id=spec.item_id,
+        )
+    except (AttributeError, TypeError):
+        return _internal_error(
+            "render_plan",
+            "approved oval render-plan contract construction failed",
+            item_id=spec.item_id,
+        )
+
+
+def _plan_visible_oval_intervals(
+    geometry: OvalExecutionGeometry,
+    viewport: ResolvedViewport,
+    *,
+    policy: AngularSamplingPolicy,
+) -> tuple[tuple[float, float, SegmentClosure], ...] | ErrorInfo:
+    """Find visible arcs using exact boundary roots and a cyclic interval sweep."""
+
+    candidates = [0.0]
+    left = Fraction.from_float(viewport.x_min)
+    right = Fraction.from_float(viewport.x_max)
+    bottom = Fraction.from_float(viewport.y_min)
+    top = Fraction.from_float(viewport.y_max)
+    for edge in (left, right):
+        delta = edge - geometry.center_x
+        candidates.extend(
+            _x_boundary_angles(
+                delta,
+                geometry.semi_axis_x_squared,
+                geometry.semi_axis_x_float,
+            ),
+        )
+    for edge in (bottom, top):
+        delta = edge - geometry.center_y
+        candidates.extend(
+            _y_boundary_angles(
+                delta,
+                geometry.semi_axis_y_squared,
+                geometry.semi_axis_y_float,
+            ),
+        )
+    angles = _merged_normalized_angles(candidates, policy.angle_merge_ulps)
+    visible: list[bool] = []
+    for index, start in enumerate(angles):
+        stop = angles[index + 1] if index + 1 < len(angles) else angles[0] + tau
+        midpoint = start + (stop - start) / 2.0
+        x_value, y_value = oval_parameter_point(geometry, midpoint)
+        visible.append(
+            _inside_closed_viewport(
+                x_value,
+                y_value,
+                viewport,
+                ulps=policy.viewport_boundary_ulps,
+            ),
+        )
+    if all(visible):
+        return ((0.0, tau, SegmentClosure.CLOSED),)
+    if not any(visible):
+        return _no_visible_oval_error(
+            geometry.spec.item_id,
+            "oval has no visible open interval in the viewport",
+        )
+
+    runs: list[tuple[float, float, SegmentClosure]] = []
+    count = len(angles)
+    for index, is_visible in enumerate(visible):
+        if not is_visible or visible[(index - 1) % count]:
+            continue
+        stop_index = index
+        while visible[stop_index % count]:
+            stop_index += 1
+            if stop_index - index > count:
+                return _numeric_range_error_for_oval(
+                    geometry.spec.item_id,
+                    "cyclic oval interval sweep did not terminate",
+                )
+        start = angles[index]
+        stop = angles[stop_index % count]
+        if stop <= start:
+            stop += tau
+        if not isfinite(start) or not isfinite(stop) or not 0.0 < stop - start < tau:
+            continue
+        runs.append((start, stop, SegmentClosure.OPEN))
+    runs.sort(key=lambda interval: interval[0])
+    if not runs:
+        return _no_visible_oval_error(
+            geometry.spec.item_id,
+            "visible oval intervals collapsed numerically",
+        )
+    if len(runs) > 4:
+        return _numeric_range_error_for_oval(
+            geometry.spec.item_id,
+            "oval visibility produced more than four independent arcs",
+        )
+    return tuple(runs)
+
+
+def _x_boundary_angles(
+    delta: Fraction,
+    axis_squared: Fraction,
+    axis_float: float,
+) -> tuple[float, ...]:
+    squared = delta * delta
+    if squared > axis_squared:
+        return ()
+    if squared == axis_squared:
+        return (0.0 if delta > 0 else pi,)
+    ratio = max(-1.0, min(1.0, float(delta) / axis_float))
+    angle = acos(ratio)
+    return (angle, tau - angle)
+
+
+def _y_boundary_angles(
+    delta: Fraction,
+    axis_squared: Fraction,
+    axis_float: float,
+) -> tuple[float, ...]:
+    squared = delta * delta
+    if squared > axis_squared:
+        return ()
+    if squared == axis_squared:
+        return (pi / 2.0 if delta > 0 else 3.0 * pi / 2.0,)
+    ratio = max(-1.0, min(1.0, float(delta) / axis_float))
+    angle = asin(ratio)
+    return (_normalize_angle(angle), _normalize_angle(pi - angle))
+
+
+def _normalize_angle(value: float) -> float:
+    normalized = value % tau
+    return 0.0 if normalized == tau else normalized
+
+
+def _merged_normalized_angles(values: list[float], merge_ulps: int) -> tuple[float, ...]:
+    seam_tolerance = merge_ulps * ulp(tau)
+    normalized = []
+    for value in values:
+        angle = _normalize_angle(value)
+        if angle <= seam_tolerance or tau - angle <= seam_tolerance:
+            angle = 0.0
+        normalized.append(angle)
+    normalized.sort()
+    merged: list[float] = []
+    for angle in normalized:
+        if not merged or abs(angle - merged[-1]) > seam_tolerance:
+            merged.append(angle)
+    return tuple(merged)
+
+
+def _inside_closed_viewport(
+    x_value: float,
+    y_value: float,
+    viewport: ResolvedViewport,
+    *,
+    ulps: int,
+) -> bool:
+    return _within_axis_ulps(x_value, viewport.x_min, viewport.x_max, ulps) and (
+        _within_axis_ulps(y_value, viewport.y_min, viewport.y_max, ulps)
+    )
+
+
+def _within_axis_ulps(value: float, lower: float, upper: float, ulps: int) -> bool:
+    tolerance = ulps * max(ulp(value), ulp(lower), ulp(upper), ulp(upper - lower))
+    return lower - tolerance <= value <= upper + tolerance
+
+
+def _sampled_oval_intervals(
+    geometry: OvalExecutionGeometry,
+    viewport: ResolvedViewport,
+    bounds: tuple[tuple[float, float, SegmentClosure], ...],
+    *,
+    image_width: int,
+    image_height: int,
+    limits: ApplicationLimits,
+    policy: AngularSamplingPolicy,
+) -> tuple[ParameterIntervalPlan, ...] | ErrorInfo:
+    x_span = viewport.x_max - viewport.x_min
+    y_span = viewport.y_max - viewport.y_min
+    try:
+        rx_px = geometry.outward_semi_axis_x * image_width / x_span
+        ry_px = geometry.outward_semi_axis_y * image_height / y_span
+        rho = max(rx_px, ry_px)
+    except (OverflowError, ZeroDivisionError):
+        return _numeric_range_error_for_oval(
+            geometry.spec.item_id,
+            "oval pixel-radius calculation overflowed",
+        )
+    if not isfinite(rho) or rho <= 0.0:
+        return _numeric_range_error_for_oval(
+            geometry.spec.item_id,
+            "oval pixel-radius calculation is not finite and positive",
+        )
+    intervals: list[ParameterIntervalPlan] = []
+    total_samples = 0
+    for start, stop, closure in bounds:
+        delta = stop - start
+        planned = policy.samples_per_pixel * rho * delta
+        if not isfinite(planned) or planned < 0.0:
+            return _numeric_range_error_for_oval(
+                geometry.spec.item_id,
+                "oval sample-count calculation is not finite",
+            )
+        try:
+            if closure is SegmentClosure.CLOSED:
+                sample_count = max(
+                    policy.minimum_closed_curve_samples,
+                    ceil(policy.samples_per_pixel * rho * tau),
+                )
+            else:
+                sample_count = max(
+                    policy.minimum_open_segment_samples,
+                    ceil(planned) + 1,
+                )
+        except (OverflowError, ValueError):
+            return _numeric_range_error_for_oval(
+                geometry.spec.item_id,
+                "oval sample-count calculation cannot be safely rounded",
+            )
+        total_samples += sample_count
+        if (
+            total_samples > limits.max_sample_points_per_item
+            or total_samples > limits.max_total_sample_points
+        ):
+            return _resource_error(
+                "oval_sample_count",
+                "oval sample count exceeds active point limits",
+                item_id=geometry.spec.item_id,
+            )
+        try:
+            intervals.append(
+                ParameterIntervalPlan(
+                    mathematical_branch_id=0,
+                    parameter_start=start,
+                    parameter_stop=stop,
+                    sample_count=sample_count,
+                    closure=closure,
+                ),
+            )
+        except (TypeError, ValueError):
+            return _numeric_range_error_for_oval(
+                geometry.spec.item_id,
+                "oval parameter interval construction failed",
+            )
+    return tuple(intervals)
+
+
 def _line_segment_for_viewport(
     spec: LineSpec,
     viewport: ResolvedViewport,
@@ -774,6 +1194,17 @@ def _no_visible_line_error(item_id: str, technical_message: str) -> ErrorInfo:
     )
 
 
+def _no_visible_oval_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NO_VISIBLE_CURVE,
+        user_message="The circle or ellipse has no visible arc in the current viewport.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="oval_visibility",
+        recoverable=True,
+    )
+
+
 def _numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
     return ErrorInfo(
         code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
@@ -781,6 +1212,17 @@ def _numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
         technical_message=technical_message,
         item_id=item_id,
         field_name="line_numeric_range",
+        recoverable=True,
+    )
+
+
+def _numeric_range_error_for_oval(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
+        user_message="The circle or ellipse is outside the supported numeric range.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="oval_numeric_range",
         recoverable=True,
     )
 

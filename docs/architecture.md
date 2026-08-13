@@ -2,7 +2,7 @@
 
 版本：v0.1  
 最后更新：2026-08-09
-状态：实施中的架构基线（Stage 14B-2 已实现 exact 一般直线的自动视口、规划与正式参数化采样；圆锥曲线算法及应用整合尚未实施）
+状态：实施中的架构基线（Stage 14B-2 已实现 exact 一般直线；Stage 14C 已实现圆/椭圆的自动视口、规划与正式参数化采样；双曲线、抛物线及应用整合尚未实施）
 
 ## 1. 文档职责与事实来源
 
@@ -294,9 +294,9 @@ M1.5 支持的图形、方程、精确系数、隐式乘法继承、M1 路由和
 
 通用二维 contour 不是受限直线/圆锥曲线的默认主实现。它只可作为诊断对照或未来任意隐式曲线方案的独立原型，不能绕过当前 OUT 范围。
 
-### 7.4 Stage 14B 公共契约、直线原型与阶段边界
+### 7.4 Stage 14B/14C 公共契约、参数化原型与阶段边界
 
-Stage 14B-1 把既有 M1 显函数链路扩展为可容纳 Stage 13 六种 exact Spec 的统一公共边界；Stage 14B-2 在该边界内只放行 exact、非退化 `LineSpec`。正式单项数据流固定为：
+Stage 14B-1 把既有 M1 显函数链路扩展为可容纳 Stage 13 六种 exact Spec 的统一公共边界；Stage 14B-2 在该边界内放行 exact、非退化 `LineSpec`；Stage 14C 沿用同一边界放行 `CircleSpec | EllipseSpec`。正式单项数据流固定为：
 
 ```text
 Stage 13 typed PlotSceneSpec
@@ -310,7 +310,7 @@ Stage 13 typed PlotSceneSpec
 
 `resolve_single_explicit_viewport` 与 `build_single_explicit_render_plan` 保留原签名，仅作为统一实现的兼容 wrapper；不得保留第二套 resolver、Builder 或绕过 RenderPlan/receipt 的采样入口。
 
-Stage 14B-2 的直线直接原型沿用同一条链路：`analyze_plot_item → PlotSceneSpec → resolve_single_item_viewport → RenderPlanBuilder.build → sample_parameterized_curve`。resolver 负责唯一的视口解析，Builder 负责 exact 四边求交并签发现有 receipt，sampler 只消费已批准端点；sampler 不重新解析视口、不重新求交，也不调用 Builder。
+Stage 14B-2/14C 的直接原型沿用同一条链路：`analyze_plot_item → PlotSceneSpec → resolve_single_item_viewport → RenderPlanBuilder.build → sample_parameterized_curve`。resolver 负责唯一的视口解析，Builder 负责 exact 边界几何、可见 segment 规划并签发现有 receipt，sampler 只消费已批准端点或参数区间；sampler 不重新解析视口、不重新求交/规划区间，也不调用 Builder。
 
 用户意图与解析结果使用两个 exact enum：
 
@@ -318,7 +318,8 @@ Stage 14B-2 的直线直接原型沿用同一条链路：`analyze_plot_item → 
 * `ResolvedAspect` 为 `AUTO | EQUAL`，只存在于 `ResolvedViewport`；
 * `DEFAULT` 对显函数和一般直线解析为 `AUTO`，对圆、椭圆、双曲线和抛物线解析为 `EQUAL`；用户显式 `AUTO/EQUAL` 始终优先；
 * exact `LineSpec` 自动视口使用有界 exact arithmetic，成功 source 为 `ViewportSource.AUTO_GEOMETRY`；它不运行显函数 probe 或 fallback；
-* 圆、椭圆、双曲线和抛物线的自动视口仍不探测、不回退，返回不可恢复的 typed strategy error；手动视口仍可为六种 Spec 解析边界与比例。
+* exact `CircleSpec | EllipseSpec` 自动视口从完整数学包围盒推导，应用集中 padding/span/coordinate limits，成功 source 为 `AUTO_GEOMETRY`；它不运行显函数 probe 或 fallback；
+* 双曲线和抛物线的自动视口仍不探测、不回退，返回不可恢复的 typed strategy error；手动视口仍可为六种 Spec 解析边界与比例。
 
 计划层保持一个顶层 `RenderPlan`，并形成两个封闭联合：
 
@@ -338,7 +339,7 @@ approval receipt 是内部 typed union。签发前和每次消费时都统一交
 | `ExplicitRenderItemPlan` | 当前 numeric executor version | `None` | exact `RenderMemoryBudget` |
 | `GeometryRenderItemPlan` | `None` | `parameterized-sampler-v1` | exact `ParameterizedRenderMemoryBudget` |
 
-`RenderMemoryBudget` 保持公开名称并新增 `segment_metadata_bytes`；参数化预算独立记录最终 x/y、artist、segment ranges/metadata、parameter batch、transcendental/validation workspace、RGBA canvas 与 PNG 缓冲/复制，提供 fixed、batch 和 total 求和。参数化预算不复用 numeric executor 的 `executor_extra_batch_bytes`。直线 Builder 与 sampler 调用同一个预算计算器；Builder 在 exact 求交前审批完整预算，sampler 在第一次数组分配前重新计算并逐字段核对。
+`RenderMemoryBudget` 保持公开名称并新增 `segment_metadata_bytes`；参数化预算独立记录最终 x/y、artist、segment ranges/metadata、parameter batch、transcendental/validation workspace、RGBA canvas 与 PNG 缓冲/复制，提供 fixed、batch 和 total 求和。参数化预算不复用 numeric executor 的 `executor_extra_batch_bytes`。直线和圆/椭圆分别由 Builder 与 sampler 调用各自唯一的共享参数化预算公式；Builder 在签发 plan 前审批完整预算，sampler 在第一次数组分配前重新计算并逐字段核对。
 
 成功结果联合为：
 
@@ -348,7 +349,9 @@ SampledCurve = SampledExplicitFunction | SampledParameterizedCurve
 
 `SampledExplicitFunction` 保持 exact class、构造签名和原 dataclass 字段，通过只读 property 投影 branch ID 为 `None` 的 segment metadata。`SampledParameterizedCurve` 只接受自有、只读 `float64` x/y 和 `int64 [start, stop)` ranges，每个 segment 至少两个点并与 typed metadata 一一对应；普通公共构造不能注入 approval snapshot。
 
-Stage 14B-2 已交付一般直线的 exact 自动视口、exact 矩形边界求交、稳定端点排序、ULP 合并与归一化残差门禁，以及返回一个只读两点开放线段的正式 `sample_parameterized_curve`。圆/椭圆角区间、双曲线两支、抛物线可见参数区间仍返回 strategy error；几何 renderer、`SceneRenderExecutor`、Actor、Controller、UI 也未接入该结果。P0-06 保持打开；这不表示 Stage 14、Stage 15 或 M1.5 完成，也未进入 Stage 14C。
+Stage 14B-2 已交付一般直线的 exact 自动视口、exact 矩形边界求交、稳定端点排序、ULP 合并与归一化残差门禁，以及只读两点开放线段采样。Stage 14C 已交付圆/椭圆的 outward 几何包围、自动视口、边界根加循环 sweep 的最多四个可见角区间、显式 `CLOSED` 完整曲线、确定性点数/batch/预算、exact 隐式残差与正式只读参数化采样；算法版本由 `angular-sampling-policy-v1` 标识，未升级既有 RenderPlan、sampler 或 limits version。
+
+双曲线两支和抛物线可见参数区间仍返回 strategy error；几何 renderer、`SceneRenderExecutor`、Actor、Controller、UI 也未接入该结果。P0-06 保持打开；这不表示 Stage 14、Stage 15 或 M1.5 完成，也未进入 Stage 14D-1、14D-2 或 14E。
 
 ## 8. RenderActor 并发模型
 

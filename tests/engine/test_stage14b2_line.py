@@ -308,13 +308,21 @@ def test_auto_line_anchor_outside_supported_viewport_has_no_fallback() -> None:
 
 @pytest.mark.parametrize(
     "text",
-    ["x^2+y^2=25", "4*x^2+9*y^2=36", "4*x^2-9*y^2=36", "x^2=4*y"],
+    ["4*x^2-9*y^2=36", "x^2=4*y"],
 )
-def test_conic_auto_viewport_remains_stage14b1_strategy_error(text: str) -> None:
+def test_unimplemented_conic_auto_viewport_remains_strategy_error(text: str) -> None:
     result = resolve_single_item_viewport(_scene(text), ViewportRequest())
     assert result.error is not None
     assert result.error.code is ErrorCode.INTERNAL_ERROR
     assert result.error.field_name == "viewport_strategy"
+
+
+@pytest.mark.parametrize("text", ["x^2+y^2=25", "4*x^2+9*y^2=36"])
+def test_circle_and_ellipse_auto_viewports_are_active(text: str) -> None:
+    result = resolve_single_item_viewport(_scene(text), ViewportRequest())
+    assert result.error is None
+    assert result.viewport is not None
+    assert result.viewport.source is ViewportSource.AUTO_GEOMETRY
 
 
 def test_explicit_viewport_wrapper_remains_bit_for_bit_equivalent() -> None:
@@ -589,13 +597,21 @@ def test_unapproved_line_plan_is_rejected_before_allocation(
 
 @pytest.mark.parametrize(
     "text",
-    ["x^2+y^2=25", "4*x^2+9*y^2=36", "4*x^2-9*y^2=36", "x^2=4*y"],
+    ["4*x^2-9*y^2=36", "x^2=4*y"],
 )
-def test_builder_does_not_approve_conics(text: str) -> None:
+def test_builder_does_not_approve_unimplemented_conics(text: str) -> None:
     result = _build(text)
     assert type(result) is ErrorInfo
     assert result.code is ErrorCode.INTERNAL_ERROR
     assert result.field_name == "geometry_strategy"
+
+
+@pytest.mark.parametrize("text", ["x^2+y^2=25", "4*x^2+9*y^2=36"])
+def test_builder_approves_circle_and_ellipse(text: str) -> None:
+    result = _build(text)
+    assert type(result) is RenderPlan
+    assert type(result.item_plan) is GeometryRenderItemPlan
+    assert result.item_plan.max_segment_count == 4
 
 
 def test_parameterized_sampler_public_signature_is_exact() -> None:
