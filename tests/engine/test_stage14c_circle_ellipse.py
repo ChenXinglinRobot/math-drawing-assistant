@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, fields, replace
 from fractions import Fraction
-from math import ceil, isfinite, tau
+from math import ceil, gcd, isfinite, tau
 
 import numpy as np
 import pytest
@@ -28,6 +28,7 @@ from math_drawing_assistant.engine.oval_geometry import (
     project_oval_geometry,
 )
 from math_drawing_assistant.engine.parameterized_budget import (
+    _oval_exact_max_integer_bits,
     build_oval_parameterized_memory_budget,
     estimate_oval_exact_workspace_bytes,
     plan_oval_batch_size,
@@ -450,6 +451,193 @@ def test_oval_budget_fields_and_sums_match_the_frozen_formula() -> None:
     assert budget.png_buffer_reserve_bytes == DEFAULT_LIMITS.max_png_bytes
     assert budget.png_copy_bytes == DEFAULT_LIMITS.max_png_bytes
     assert budget.total_bytes == budget.fixed_bytes + budget.batch_bytes
+
+
+def test_oval_exact_bit_bound_covers_adversarial_primitive_circle_comparison() -> None:
+    decimal_digits = DEFAULT_LIMITS.max_equation_canonical_coefficient_digits
+    coefficient_a = 10**decimal_digits - 1
+    center_numerator = 10 ** (decimal_digits - 1)
+    coefficient_d = -2 * center_numerator
+    discriminant = coefficient_d * coefficient_d * coefficient_a
+
+    center = Fraction(-coefficient_d, 2 * coefficient_a)
+    axis_squared = Fraction(
+        discriminant,
+        4 * coefficient_a * coefficient_a * coefficient_a,
+    )
+    source_spec = _spec("x^2+y^2=1")
+    witness_spec = replace(
+        source_spec,
+        coefficients=replace(
+            source_spec.coefficients,
+            a=coefficient_a,
+            c=coefficient_a,
+            d=coefficient_d,
+            f=0,
+        ),
+        center_x=center,
+        radius_squared=axis_squared,
+    )
+    witness_spec.__post_init__()
+    witness_geometry = project_oval_geometry(witness_spec)
+    distance_squared = (center - Fraction.from_float(0.0)) ** 2
+    comparison_integers = (
+        distance_squared.numerator * axis_squared.denominator,
+        axis_squared.numerator * distance_squared.denominator,
+    )
+    witness_bits = max(value.bit_length() for value in comparison_integers)
+    old_mixed_radix_bits = 4 * decimal_digits + 4 * 1_074 + 4
+
+    assert len(str(coefficient_a)) == decimal_digits
+    assert len(str(abs(coefficient_d))) == decimal_digits
+    assert gcd(coefficient_a, abs(coefficient_d)) == 1
+    assert distance_squared == axis_squared
+    assert witness_geometry.center_x == center
+    assert witness_geometry.semi_axis_x_squared == axis_squared
+    assert witness_bits > old_mixed_radix_bits
+    assert witness_bits <= _oval_exact_max_integer_bits(DEFAULT_LIMITS)
+
+
+def test_oval_exact_workspace_bound_is_monotonic_for_custom_coefficient_digits() -> None:
+    minimum_digits = max(
+        6 * DEFAULT_LIMITS.max_equation_coefficient_denominator_digits,
+        DEFAULT_LIMITS.max_equation_coefficient_numerator_digits
+        + 5 * DEFAULT_LIMITS.max_equation_coefficient_denominator_digits,
+    )
+    limits = (
+        replace(
+            DEFAULT_LIMITS,
+            max_equation_canonical_coefficient_digits=decimal_digits,
+        )
+        for decimal_digits in (minimum_digits, minimum_digits + 1, minimum_digits + 32)
+    )
+    bit_bounds_and_bytes = tuple(
+        (
+            _oval_exact_max_integer_bits(custom_limits),
+            estimate_oval_exact_workspace_bytes(custom_limits),
+        )
+        for custom_limits in limits
+    )
+
+    assert all(
+        later_bits > earlier_bits and later_bytes >= earlier_bytes
+        for (earlier_bits, earlier_bytes), (later_bits, later_bytes) in zip(
+            bit_bounds_and_bytes,
+            bit_bounds_and_bytes[1:],
+        )
+    )
+
+
+def test_oval_exact_workspace_is_shared_across_resolver_builder_and_sampler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exact_workspace = estimate_oval_exact_workspace_bytes(DEFAULT_LIMITS)
+    calls: list[tuple[str, int]] = []
+    original_resolver_estimate = viewport_resolver.estimate_oval_exact_workspace_bytes
+    original_builder_budget = render_plan_builder.build_oval_parameterized_memory_budget
+    original_sampler_budget = samplers.build_oval_parameterized_memory_budget
+
+    def resolver_estimate(*args: object, **kwargs: object) -> int:
+        result = original_resolver_estimate(*args, **kwargs)  # type: ignore[arg-type]
+        calls.append(("resolver", result))
+        return result
+
+    def builder_budget(*args: object, **kwargs: object) -> object:
+        result = original_builder_budget(*args, **kwargs)  # type: ignore[arg-type]
+        calls.append(("builder", result.validation_workspace_bytes))
+        return result
+
+    def sampler_budget(*args: object, **kwargs: object) -> object:
+        result = original_sampler_budget(*args, **kwargs)  # type: ignore[arg-type]
+        calls.append(("sampler", result.validation_workspace_bytes))
+        return result
+
+    monkeypatch.setattr(
+        viewport_resolver,
+        "estimate_oval_exact_workspace_bytes",
+        resolver_estimate,
+    )
+    monkeypatch.setattr(
+        render_plan_builder,
+        "build_oval_parameterized_memory_budget",
+        builder_budget,
+    )
+    monkeypatch.setattr(
+        samplers,
+        "build_oval_parameterized_memory_budget",
+        sampler_budget,
+    )
+
+    scene = _scene("x^2+y^2=25")
+    resolution = resolve_single_item_viewport(scene, ViewportRequest())
+    assert resolution.viewport is not None
+    plan = RenderPlanBuilder().build(
+        scene,
+        resolution.viewport,
+        image_width=800,
+        image_height=600,
+        dpi=96,
+        show_grid=True,
+        show_legend=False,
+    )
+    assert type(plan) is RenderPlan
+    assert type(sample_parameterized_curve(plan)) is SampledParameterizedCurve
+
+    assert calls[0] == ("resolver", exact_workspace)
+    validation_overhead = plan.memory_budget.validation_workspace_bytes - exact_workspace
+    assert calls[-2:] == [
+        ("builder", exact_workspace + validation_overhead),
+        ("sampler", exact_workspace + validation_overhead),
+    ]
+
+
+def test_oval_full_budget_boundary_rejects_before_receipt_issue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline_plan = _approved()
+    required_budget = build_oval_parameterized_memory_budget(
+        sample_count=baseline_plan.item_plan.sample_count,  # type: ignore[union-attr]
+        batch_size=1,
+        image_width=baseline_plan.image_width,
+        image_height=baseline_plan.image_height,
+        limits=DEFAULT_LIMITS,
+    )
+    required_bytes = required_budget.total_bytes
+    issued_receipt_budgets: list[int] = []
+    original_approve = render_plan_builder._approve_render_plan
+
+    def approve(plan: RenderPlan) -> RenderPlan:
+        issued_receipt_budgets.append(plan.memory_budget.total_bytes)
+        return original_approve(plan)
+
+    monkeypatch.setattr(render_plan_builder, "_approve_render_plan", approve)
+
+    approved = _build(
+        "x^2+y^2=25",
+        builder=RenderPlanBuilder(
+            limits=replace(
+                DEFAULT_LIMITS,
+                max_estimated_memory_bytes=required_bytes,
+            ),
+        ),
+    )
+    assert issued_receipt_budgets == [required_bytes]
+    issued_receipt_budgets.clear()
+    rejected = _build(
+        "x^2+y^2=25",
+        builder=RenderPlanBuilder(
+            limits=replace(
+                DEFAULT_LIMITS,
+                max_estimated_memory_bytes=required_bytes - 1,
+            ),
+        ),
+    )
+
+    assert type(approved) is RenderPlan
+    assert approved.memory_budget == required_budget
+    assert type(rejected) is ErrorInfo
+    assert rejected.code is ErrorCode.RESOURCE_LIMIT_EXCEEDED
+    assert issued_receipt_budgets == []
 
 
 def test_batch_planner_returns_preference_when_memory_allows() -> None:

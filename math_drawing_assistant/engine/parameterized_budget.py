@@ -18,6 +18,7 @@ _LINE_BATCH_SIZE = 1
 _LINE_INTERSECTION_CANDIDATE_CAPACITY = 4
 _LINE_EXACT_TEMPORARY_BIGINT_COUNT = 28
 _FLOAT64_MAX_EXPONENT_MAGNITUDE = 1_074
+_FLOAT64_EPSILON_DENOMINATOR_BITS = 53
 _OVAL_SEGMENT_CAPACITY = 4
 _OVAL_CANDIDATE_ANGLE_CAPACITY = 9
 _OVAL_INTERVAL_CAPACITY = 4
@@ -65,6 +66,44 @@ _OVAL_EXACT_LIVE_BIGINT_VALUES = (
     "comparison_cross_product_right",
     "outward_bound_cross_product",
 )
+
+
+def _oval_exact_max_integer_bits(limits: ApplicationLimits) -> int:
+    """Return a conservative bit bound for every exact oval integer."""
+
+    if type(limits) is not ApplicationLimits:
+        raise TypeError("oval exact bit bound requires exact ApplicationLimits.")
+    limits.__post_init__()
+
+    # A canonical coefficient has magnitude < 10**D.  Because 10 < 2**4,
+    # D decimal digits need at most 4*D binary bits.  A finite float64 Fraction
+    # needs at most 1,075 bits in either numerator or denominator: the largest
+    # finite numerator is below 2**1_024 and a subnormal denominator is 2**1_074.
+    coefficient_bits = 4 * limits.max_equation_canonical_coefficient_digits
+    float_ratio_bits = _FLOAT64_MAX_EXPONENT_MAGNITUDE + 1
+
+    # center = -d/(2a) has numerator <= C and denominator <= C+1 bits.
+    # q = d**2*c + e**2*a - 4*a*c*f needs <= 3*C+3 bits, and an axis square
+    # q/(4*a**2*c) needs <= 3*C+3 bits in either reduced component.  Subtracting
+    # a float edge from a center produces numerator <= C+F+2 and denominator
+    # <= C+F+1; squaring doubles those widths.  Fraction comparison then forms
+    # the two unreduced cross-products, whose larger side is bounded below.
+    outward_comparison_bits = 5 * coefficient_bits + 2 * float_ratio_bits + 6
+
+    # normalized_oval_residual squares two float ratios, multiplies by one
+    # coefficient, sums five non-negative terms, and divides polynomial by
+    # scale.  Aligning the shared power-of-two denominators can shift a term by
+    # at most 2*F bits, so each five-term sum needs <= C+4*F+3 numerator bits
+    # and <= 2*F denominator bits.  The final Fraction division cross-products
+    # therefore need at most C+6*F+3 bits.  Comparing that residual against an
+    # integer multiple of 2**-52 adds at most the 53-bit denominator of 2**52.
+    normalized_residual_comparison_bits = (
+        coefficient_bits
+        + 6 * float_ratio_bits
+        + 3
+        + _FLOAT64_EPSILON_DENOMINATOR_BITS
+    )
+    return max(outward_comparison_bits, normalized_residual_comparison_bits)
 
 
 def estimate_line_exact_workspace_bytes(limits: ApplicationLimits) -> int:
@@ -140,14 +179,7 @@ def build_line_parameterized_memory_budget(
 def estimate_oval_exact_workspace_bytes(limits: ApplicationLimits) -> int:
     """Bound the simultaneous Python integers used by exact oval arithmetic."""
 
-    if type(limits) is not ApplicationLimits:
-        raise TypeError("oval exact workspace requires exact ApplicationLimits.")
-    limits.__post_init__()
-    max_integer_bits = (
-        4 * limits.max_equation_canonical_coefficient_digits
-        + 4 * _FLOAT64_MAX_EXPONENT_MAGNITUDE
-        + 4
-    )
+    max_integer_bits = _oval_exact_max_integer_bits(limits)
     bigint_digits = (
         max_integer_bits + sys.int_info.bits_per_digit - 1
     ) // sys.int_info.bits_per_digit
