@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from fractions import Fraction
+from math import isfinite, ulp
 
 from math_drawing_assistant.config import ApplicationLimits, DEFAULT_LIMITS
 from math_drawing_assistant.engine.numeric_executor import (
     NUMERIC_EXECUTOR_CONTRACT_VERSION,
     NumericExecutionCost,
     estimate_numeric_execution_cost,
+)
+from math_drawing_assistant.engine.parameterized_budget import (
+    build_line_parameterized_memory_budget,
 )
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo
 from math_drawing_assistant.models.plot_specs import (
@@ -24,9 +28,15 @@ from math_drawing_assistant.models.plot_specs import (
 )
 from math_drawing_assistant.models.render_plan import (
     DEFAULT_EXPLICIT_SAMPLING_POLICY,
+    DEFAULT_LINE_SAMPLING_POLICY,
+    PARAMETERIZED_SAMPLER_CONTRACT_VERSION,
     RENDER_PLAN_CONTRACT_VERSION,
     ExplicitRenderItemPlan,
     ExplicitSamplingPolicy,
+    GeometryRenderItemPlan,
+    LineSamplingPolicy,
+    LineSegmentPlan,
+    ParameterizedRenderMemoryBudget,
     RenderMemoryBudget,
     RenderPlan,
     _approve_render_plan,
@@ -47,6 +57,7 @@ _GEOMETRY_SPEC_TYPES = (
     ParabolaSpec,
 )
 _SINGLE_ITEM_SPEC_TYPES = (ExplicitFunctionSpec, *_GEOMETRY_SPEC_TYPES)
+_FLOAT64_EPSILON = Fraction(1, 1 << 52)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +66,7 @@ class RenderPlanBuilder:
 
     limits: ApplicationLimits = DEFAULT_LIMITS
     sampling_policy: ExplicitSamplingPolicy = DEFAULT_EXPLICIT_SAMPLING_POLICY
+    line_sampling_policy: LineSamplingPolicy = DEFAULT_LINE_SAMPLING_POLICY
 
     def build(
         self,
@@ -97,6 +109,22 @@ class RenderPlanBuilder:
         if output_error is not None:
             return output_error
 
+        if type(spec) is LineSpec:
+            line_policy_or_error = _validated_line_policy(self.line_sampling_policy)
+            if isinstance(line_policy_or_error, ErrorInfo):
+                return line_policy_or_error
+            return _build_line_plan(
+                scene_spec,
+                spec,
+                resolved_viewport,
+                image_width=image_width,
+                image_height=image_height,
+                dpi=dpi,
+                show_grid=show_grid,
+                show_legend=show_legend,
+                limits=limits,
+                policy=line_policy_or_error,
+            )
         if type(spec) is not ExplicitFunctionSpec:
             return _internal_error(
                 "geometry_strategy",
@@ -230,6 +258,27 @@ def _validated_policy(policy: object) -> ExplicitSamplingPolicy | ErrorInfo:
         policy.__post_init__()
     except (AttributeError, TypeError, ValueError):
         return _internal_error("sampling_policy", "sampling policy contract mismatch")
+    return policy
+
+
+def _validated_line_policy(policy: object) -> LineSamplingPolicy | ErrorInfo:
+    if type(policy) is not LineSamplingPolicy:
+        return _internal_error(
+            "line_sampling_policy",
+            "builder requires an exact LineSamplingPolicy",
+        )
+    try:
+        policy.__post_init__()
+    except (AttributeError, TypeError, ValueError):
+        return _internal_error(
+            "line_sampling_policy",
+            "line sampling policy contract mismatch",
+        )
+    if policy != DEFAULT_LINE_SAMPLING_POLICY:
+        return _internal_error(
+            "line_sampling_policy",
+            "line sampling policy version is not active",
+        )
     return policy
 
 
@@ -465,6 +514,229 @@ def _plan_memory_and_batch(
     return (item_plan, memory_budget)
 
 
+def _build_line_plan(
+    scene_spec: PlotSceneSpec,
+    spec: LineSpec,
+    resolved_viewport: ResolvedViewport,
+    *,
+    image_width: int,
+    image_height: int,
+    dpi: int,
+    show_grid: bool,
+    show_legend: bool,
+    limits: ApplicationLimits,
+    policy: LineSamplingPolicy,
+) -> RenderPlan | ErrorInfo:
+    """Approve one exact visible general-line segment and its full budget."""
+
+    try:
+        memory_budget = build_line_parameterized_memory_budget(
+            image_width=image_width,
+            image_height=image_height,
+            limits=limits,
+        )
+    except MemoryError:
+        return _resource_error(
+            "max_estimated_memory_bytes",
+            "line parameterized budget construction failed",
+            item_id=spec.item_id,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return _internal_error(
+            "parameterized_budget",
+            "line parameterized budget contract mismatch",
+            item_id=spec.item_id,
+        )
+    try:
+        limits.validate_scene_resources(
+            item_count=1,
+            sample_points_per_item=policy.sample_count,
+            total_sample_points=policy.sample_count,
+            branches_per_item=1,
+            total_branches=1,
+            estimated_memory_bytes=memory_budget.total_bytes,
+        )
+    except (TypeError, ValueError):
+        return _resource_error(
+            "line_plan_resources",
+            "line sampling plan exceeds active scene resource limits",
+            item_id=spec.item_id,
+        )
+
+    try:
+        segment_or_error = _line_segment_for_viewport(
+            spec,
+            resolved_viewport,
+            policy=policy,
+        )
+    except MemoryError:
+        return _resource_error(
+            "max_estimated_memory_bytes",
+            "approved exact line workspace allocation failed",
+            item_id=spec.item_id,
+        )
+    if isinstance(segment_or_error, ErrorInfo):
+        return segment_or_error
+    segment = segment_or_error
+
+    try:
+        item_plan = GeometryRenderItemPlan(
+            item_id=spec.item_id,
+            mathematical_branch_count=1,
+            segments=(segment,),
+            sample_count=policy.sample_count,
+            batch_size=policy.batch_size,
+            max_segment_count=1,
+        )
+        plan = RenderPlan(
+            scene_spec=scene_spec,
+            resolved_viewport=resolved_viewport,
+            image_width=image_width,
+            image_height=image_height,
+            dpi=dpi,
+            plan_version=RENDER_PLAN_CONTRACT_VERSION,
+            limits_version=limits.version,
+            show_grid=show_grid,
+            show_legend=show_legend,
+            sampling_policy_version=policy.version,
+            numeric_executor_contract_version=None,
+            parameterized_sampler_contract_version=(
+                PARAMETERIZED_SAMPLER_CONTRACT_VERSION
+            ),
+            item_plan=item_plan,
+            memory_budget=memory_budget,
+        )
+        return _approve_render_plan(plan)
+    except MemoryError:
+        return _resource_error(
+            "max_estimated_memory_bytes",
+            "line render-plan approval allocation failed",
+            item_id=spec.item_id,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return _internal_error(
+            "render_plan",
+            "approved line render-plan contract construction failed",
+            item_id=spec.item_id,
+        )
+
+
+def _line_segment_for_viewport(
+    spec: LineSpec,
+    viewport: ResolvedViewport,
+    *,
+    policy: LineSamplingPolicy,
+) -> LineSegmentPlan | ErrorInfo:
+    """Intersect ``d*x + e*y + f = 0`` with four exact binary viewport edges."""
+
+    left = Fraction.from_float(viewport.x_min)
+    right = Fraction.from_float(viewport.x_max)
+    bottom = Fraction.from_float(viewport.y_min)
+    top = Fraction.from_float(viewport.y_max)
+    candidates: list[tuple[Fraction, Fraction]] = []
+
+    def add_candidate(x_value: Fraction, y_value: Fraction) -> None:
+        if not (left <= x_value <= right and bottom <= y_value <= top):
+            return
+        candidate = (x_value, y_value)
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    # Fixed edge order: left, right, bottom, top.
+    for x_value in (left, right):
+        edge_value = spec.d * x_value + spec.f
+        if spec.e != 0:
+            add_candidate(x_value, -edge_value / spec.e)
+        elif edge_value == 0:
+            add_candidate(x_value, bottom)
+            add_candidate(x_value, top)
+    for y_value in (bottom, top):
+        edge_value = spec.e * y_value + spec.f
+        if spec.d != 0:
+            add_candidate(-edge_value / spec.d, y_value)
+        elif edge_value == 0:
+            add_candidate(left, y_value)
+            add_candidate(right, y_value)
+
+    if len(candidates) > 4:
+        return _numeric_range_error(spec.item_id, "line intersection produced too many candidates")
+
+    converted: list[tuple[float, float, Fraction, Fraction]] = []
+    for exact_x, exact_y in candidates:
+        try:
+            x_value = float(exact_x)
+            y_value = float(exact_y)
+        except OverflowError:
+            return _numeric_range_error(
+                spec.item_id,
+                "line intersection cannot be represented as finite float64",
+            )
+        if not isfinite(x_value) or not isfinite(y_value):
+            return _numeric_range_error(
+                spec.item_id,
+                "line intersection cannot be represented as finite float64",
+            )
+        if any(
+            _float_points_within_ulps(
+                x_value,
+                y_value,
+                existing_x,
+                existing_y,
+                policy.endpoint_merge_ulps,
+            )
+            for existing_x, existing_y, _, _ in converted
+        ):
+            continue
+        converted.append((x_value, y_value, exact_x, exact_y))
+
+    if len(converted) < 2:
+        return _no_visible_line_error(spec.item_id, "line has fewer than two distinct viewport intersections")
+    if len(converted) > 2:
+        return _numeric_range_error(spec.item_id, "line intersection did not reduce to two endpoints")
+
+    converted.sort(key=lambda point: -spec.e * point[2] + spec.d * point[3])
+    for x_value, y_value, _, _ in converted:
+        residual = _normalized_line_residual(spec, x_value, y_value)
+        if residual > policy.maximum_residual_ulps * _FLOAT64_EPSILON:
+            return _numeric_range_error(
+                spec.item_id,
+                "line endpoint residual exceeds the approved hard threshold",
+            )
+    try:
+        return LineSegmentPlan(
+            x0=converted[0][0],
+            y0=converted[0][1],
+            x1=converted[1][0],
+            y1=converted[1][1],
+        )
+    except (TypeError, ValueError):
+        return _no_visible_line_error(spec.item_id, "line endpoints collapsed after float64 conversion")
+
+
+def _float_points_within_ulps(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    endpoint_merge_ulps: int,
+) -> bool:
+    x_tolerance = endpoint_merge_ulps * max(ulp(x0), ulp(x1))
+    y_tolerance = endpoint_merge_ulps * max(ulp(y0), ulp(y1))
+    return abs(x0 - x1) <= x_tolerance and abs(y0 - y1) <= y_tolerance
+
+
+def _normalized_line_residual(spec: LineSpec, x: float, y: float) -> Fraction:
+    exact_x = Fraction.from_float(x)
+    exact_y = Fraction.from_float(y)
+    numerator = abs(spec.d * exact_x + spec.e * exact_y + spec.f)
+    scale = (
+        abs(spec.d) * max(Fraction(1), abs(exact_x))
+        + abs(spec.e) * max(Fraction(1), abs(exact_y))
+        + abs(spec.f)
+    )
+    return numerator / scale
+
+
 def _invalid_request(field_name: str, technical_message: str) -> ErrorInfo:
     return ErrorInfo(
         code=ErrorCode.INVALID_REQUEST,
@@ -487,6 +759,28 @@ def _resource_error(
         technical_message=technical_message,
         item_id=item_id,
         field_name=field_name,
+        recoverable=True,
+    )
+
+
+def _no_visible_line_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NO_VISIBLE_CURVE,
+        user_message="The line has no visible segment in the current viewport.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="line_intersection",
+        recoverable=True,
+    )
+
+
+def _numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
+        user_message="The line is outside the currently supported numeric range.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="line_numeric_range",
         recoverable=True,
     )
 

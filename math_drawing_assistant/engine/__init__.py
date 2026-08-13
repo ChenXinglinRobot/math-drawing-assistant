@@ -44,6 +44,7 @@ from math_drawing_assistant.engine.samplers import (
     SamplingWarningMetrics,
     ViewportClippedMetrics,
     sample_explicit_function,
+    sample_parameterized_curve,
 )
 from math_drawing_assistant.engine.parser import (
     ParseMetrics,
@@ -138,6 +139,7 @@ __all__ = [
     "resolve_single_item_viewport",
     "render_explicit_png",
     "sample_explicit_function",
+    "sample_parameterized_curve",
     "split_equation",
     "tokenize",
     "validate_explicit_candidate",

@@ -115,6 +115,57 @@ DEFAULT_EXPLICIT_SAMPLING_POLICY: Final[ExplicitSamplingPolicy] = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class LineSamplingPolicy:
+    """Scalar-only active policy for exact general-line sampling."""
+
+    version: str
+    sample_count: int
+    batch_size: int
+    endpoint_merge_ulps: int
+    target_residual_ulps: int
+    maximum_residual_ulps: int
+    cancellation_check_interval: int
+
+    def __post_init__(self) -> None:
+        _nonempty_version(self.version, "version")
+        for name in (
+            "sample_count",
+            "batch_size",
+            "endpoint_merge_ulps",
+            "target_residual_ulps",
+            "maximum_residual_ulps",
+            "cancellation_check_interval",
+        ):
+            _positive_int(getattr(self, name), name)
+        if self.sample_count < 2:
+            raise ValueError("line sampling needs at least two samples.")
+        if self.batch_size > self.sample_count:
+            raise ValueError("batch_size must not exceed sample_count.")
+        if self.target_residual_ulps >= self.maximum_residual_ulps:
+            raise ValueError("target residual must be below the maximum residual.")
+        if self.version == "line-sampling-policy-v1" and (
+            self.sample_count,
+            self.batch_size,
+            self.endpoint_merge_ulps,
+            self.target_residual_ulps,
+            self.maximum_residual_ulps,
+            self.cancellation_check_interval,
+        ) != (2, 1, 2, 4, 16, 1):
+            raise ValueError("line-sampling-policy-v1 semantics are fixed.")
+
+
+DEFAULT_LINE_SAMPLING_POLICY: Final[LineSamplingPolicy] = LineSamplingPolicy(
+    version="line-sampling-policy-v1",
+    sample_count=2,
+    batch_size=1,
+    endpoint_merge_ulps=2,
+    target_residual_ulps=4,
+    maximum_residual_ulps=16,
+    cancellation_check_interval=1,
+)
+
+
 class SegmentClosure(str, Enum):
     """Whether a parameterized segment is mathematically open or closed."""
 
@@ -960,6 +1011,13 @@ def _validate_cross_plan_contracts(plan: RenderPlan) -> None:
             raise ValueError("geometry parameterized sampler contract version is invalid.")
         if item.provenance.limits_version != plan.limits_version:
             raise ValueError("geometry Spec and plan limits versions do not match.")
+        if type(item) is LineSpec:
+            if plan.sampling_policy_version != DEFAULT_LINE_SAMPLING_POLICY.version:
+                raise ValueError("line sampling policy version is not active.")
+            if item_plan.sample_count != DEFAULT_LINE_SAMPLING_POLICY.sample_count:
+                raise ValueError("line sample count is invalid.")
+            if item_plan.batch_size != DEFAULT_LINE_SAMPLING_POLICY.batch_size:
+                raise ValueError("line batch size is invalid.")
         expected_branch_count, expected_capacity, expected_segment_type = (
             _geometry_approval_shape(type(item))
         )
@@ -1114,11 +1172,13 @@ def _snapshot_approved_render_plan(value: object) -> _ApprovedRenderPlanSnapshot
 
 __all__ = [
     "DEFAULT_EXPLICIT_SAMPLING_POLICY",
+    "DEFAULT_LINE_SAMPLING_POLICY",
     "ExplicitRenderItemPlan",
     "ExplicitSamplingPolicy",
     "GeometryRenderItemPlan",
     "GeometrySegmentPlan",
     "LineSegmentPlan",
+    "LineSamplingPolicy",
     "PARAMETERIZED_SAMPLER_CONTRACT_VERSION",
     "ParameterIntervalPlan",
     "ParameterizedRenderMemoryBudget",

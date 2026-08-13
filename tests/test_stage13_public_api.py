@@ -58,6 +58,7 @@ _EXPECTED_MODEL_EXPORTS = frozenset(
         "ConstantName",
         "ConstantNode",
         "DEFAULT_EXPLICIT_SAMPLING_POLICY",
+        "DEFAULT_LINE_SAMPLING_POLICY",
         "EllipseSpec",
         "EquationProvenance",
         "ErrorCode",
@@ -73,6 +74,7 @@ _EXPECTED_MODEL_EXPORTS = frozenset(
         "HyperbolaSpec",
         "InputSource",
         "LineSpec",
+        "LineSamplingPolicy",
         "LineSegmentPlan",
         "NumberNode",
         "ParabolaOpening",
@@ -170,6 +172,7 @@ _EXPECTED_ENGINE_EXPORTS = frozenset(
         "resolve_single_explicit_viewport",
         "resolve_single_item_viewport",
         "sample_explicit_function",
+        "sample_parameterized_curve",
         "split_equation",
         "tokenize",
         "validate_explicit_candidate",
@@ -316,7 +319,7 @@ def test_supported_formulas_records_the_completed_stage_13_contract() -> None:
         "<!-- LIMIT_FIELD_INDEX_END -->",
     )
 
-    assert "文档版本：stage-14b1-typed-geometry-contracts-v1" in document
+    assert "文档版本：stage-14b2-exact-line-sampling-v1" in document
     assert "阶段 13A 至 13E 已完成" in status
     assert "analyze_plot_item" in document
     assert "LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec" in document

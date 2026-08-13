@@ -28,12 +28,14 @@ from math_drawing_assistant.engine import (
     resolve_single_explicit_viewport,
     resolve_single_item_viewport,
     sample_explicit_function,
+    sample_parameterized_curve,
 )
 from math_drawing_assistant.engine import render_plan_builder, viewport_resolver
 from math_drawing_assistant.models import (
     AspectRequest,
     AxisOrientation,
     CircleSpec,
+    DEFAULT_LINE_SAMPLING_POLICY,
     EllipseSpec,
     ErrorCode,
     ErrorInfo,
@@ -189,7 +191,7 @@ def _geometry_item_plan(spec: PlotItemSpec) -> GeometryRenderItemPlan:
         mathematical_branch_count=branches,
         segments=segments,
         sample_count=sum(segment.sample_count for segment in segments),
-        batch_size=2,
+        batch_size=(1 if type(spec) is LineSpec else 2),
         max_segment_count=capacity,
     )
 
@@ -207,7 +209,11 @@ def _approved_geometry_plan(text: str) -> RenderPlan:
         limits_version=DEFAULT_LIMITS.version,
         show_grid=True,
         show_legend=False,
-        sampling_policy_version="parameterized-policy-test",
+        sampling_policy_version=(
+            DEFAULT_LINE_SAMPLING_POLICY.version
+            if type(spec) is LineSpec
+            else "parameterized-policy-test"
+        ),
         numeric_executor_contract_version=None,
         parameterized_sampler_contract_version=(
             PARAMETERIZED_SAMPLER_CONTRACT_VERSION
@@ -324,13 +330,13 @@ def test_manual_geometry_resolves_without_probe_or_fallback(
     assert result.viewport.source is ViewportSource.MANUAL
 
 
-@pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES])
+@pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES[1:]])
 def test_auto_geometry_is_nonrecoverable_strategy_failure_before_probe(
     text: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def forbidden(*args: object, **kwargs: object) -> object:
-        raise AssertionError("stage 14B-1 auto geometry must not probe or estimate")
+        raise AssertionError("unimplemented conic auto geometry must not probe or estimate")
 
     monkeypatch.setattr(viewport_resolver.np, "linspace", forbidden)
     monkeypatch.setattr(viewport_resolver, "execute_explicit_function", forbidden)
@@ -438,6 +444,15 @@ def test_approval_rejects_version_memory_and_spec_plan_crosses() -> None:
     )
     with pytest.raises(ValueError, match="parameterized"):
         render_plan_model._approve_render_plan(ordinary_explicit)
+
+
+@pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES[1:]])
+def test_parameterized_sampler_keeps_all_conics_behind_strategy_error(
+    text: str,
+) -> None:
+    result = sample_parameterized_curve(_approved_geometry_plan(text))
+    assert type(result) is ErrorInfo
+    assert result.code is ErrorCode.INTERNAL_ERROR
 
 
 def test_approval_rejects_geometry_mathematical_branch_count_mismatch() -> None:

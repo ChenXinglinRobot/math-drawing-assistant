@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from fractions import Fraction
 from math import isfinite, sqrt
 from statistics import median
 from typing import Protocol, TypeAlias
@@ -22,12 +23,29 @@ from math_drawing_assistant.engine.numeric_executor import (
     NumericExecutionResult,
     execute_explicit_function,
 )
+from math_drawing_assistant.engine.parameterized_budget import (
+    build_line_parameterized_memory_budget,
+)
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo
-from math_drawing_assistant.models.plot_specs import ExplicitFunctionSpec, PlotSceneSpec
+from math_drawing_assistant.models.plot_specs import (
+    CircleSpec,
+    EllipseSpec,
+    ExplicitFunctionSpec,
+    HyperbolaSpec,
+    LineSpec,
+    ParabolaSpec,
+    PlotSceneSpec,
+)
 from math_drawing_assistant.models.render_plan import (
     DEFAULT_EXPLICIT_SAMPLING_POLICY,
+    DEFAULT_LINE_SAMPLING_POLICY,
+    PARAMETERIZED_SAMPLER_CONTRACT_VERSION,
     ExplicitRenderItemPlan,
     ExplicitSamplingPolicy,
+    GeometryRenderItemPlan,
+    LineSamplingPolicy,
+    LineSegmentPlan,
+    ParameterizedRenderMemoryBudget,
     RenderMemoryBudget,
     RenderPlan,
     SegmentClosure,
@@ -41,6 +59,7 @@ from math_drawing_assistant.models.viewport import ResolvedViewport
 
 Float64Vector: TypeAlias = NDArray[np.float64]
 Int64Ranges: TypeAlias = NDArray[np.int64]
+_FLOAT64_EPSILON = Fraction(1, 1 << 52)
 
 class CancellationProbe(Protocol):
     """Qt-independent cooperative cancellation boundary."""
@@ -374,6 +393,21 @@ def _sampled_explicit_function_matches_approved_plan(
     )
 
 
+def _sampled_parameterized_curve_matches_approved_plan(
+    value: object,
+    plan: object,
+) -> bool:
+    """Compare one parameterized result with the sole approved plan snapshot."""
+
+    if type(value) is not SampledParameterizedCurve:
+        return False
+    snapshot = value._plan_contract_snapshot
+    return (
+        type(snapshot) is _GeometryRenderPlanApprovalSnapshot
+        and snapshot == _snapshot_approved_render_plan(plan)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _SamplingContext:
     plan: RenderPlan
@@ -383,6 +417,18 @@ class _SamplingContext:
     memory_budget: RenderMemoryBudget
     limits: ApplicationLimits
     policy: ExplicitSamplingPolicy
+
+
+@dataclass(frozen=True, slots=True)
+class _ParameterizedSamplingContext:
+    plan: RenderPlan
+    spec: LineSpec
+    viewport: ResolvedViewport
+    item_plan: GeometryRenderItemPlan
+    segment: LineSegmentPlan
+    memory_budget: ParameterizedRenderMemoryBudget
+    limits: ApplicationLimits
+    policy: LineSamplingPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +473,275 @@ def sample_explicit_function(
         # Last-resort coverage for sampler-owned list/tuple/dataclass and NumPy
         # allocations.  Programmer errors are intentionally not swallowed.
         return _allocation_error(None, "sampling allocation failed")
+
+
+def sample_parameterized_curve(
+    plan: RenderPlan,
+    *,
+    cancellation_probe: CancellationProbe | None = None,
+) -> SamplingOutcome:
+    """Sample the sole exact general line from one approved geometry plan."""
+
+    # Approval is intentionally the first operation at this public boundary.
+    try:
+        approved_plan = validate_approved_render_plan(plan)
+    except MemoryError:
+        return _allocation_error(None, "approval snapshot allocation failed")
+    except (AttributeError, TypeError, ValueError):
+        return _contract_error(None, "approved render-plan validation failed")
+
+    try:
+        return _sample_approved_parameterized_curve(
+            approved_plan,
+            cancellation_probe=cancellation_probe,
+        )
+    except MemoryError:
+        return _allocation_error(None, "parameterized sampling allocation failed")
+
+
+def _sample_approved_parameterized_curve(
+    approved_plan: RenderPlan,
+    *,
+    cancellation_probe: CancellationProbe | None,
+) -> SamplingOutcome:
+    item_id = approved_plan.scene_spec.items[0].item_id
+    cancelled_or_error = _poll_cancellation(cancellation_probe, item_id=item_id)
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(item_id)
+
+    context_or_error = _validated_parameterized_sampling_context(approved_plan)
+    if isinstance(context_or_error, ErrorInfo):
+        return context_or_error
+    context = context_or_error
+
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    try:
+        x = np.empty(context.item_plan.sample_count, dtype=np.float64)
+        y = np.empty(context.item_plan.sample_count, dtype=np.float64)
+    except MemoryError:
+        return _allocation_error(context.spec.item_id, "formal line x/y allocation failed")
+    except (TypeError, ValueError):
+        return _contract_error(context.spec.item_id, "formal line x/y allocation failed")
+    if not _owned_writable_vector(x, context.item_plan.sample_count):
+        return _contract_error(context.spec.item_id, "formal line x allocation is invalid")
+    if not _owned_writable_vector(y, context.item_plan.sample_count):
+        return _contract_error(context.spec.item_id, "formal line y allocation is invalid")
+
+    x[0] = context.segment.x0
+    y[0] = context.segment.y0
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    x[1] = context.segment.x1
+    y[1] = context.segment.y1
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    precision_limited = False
+    for index in range(context.item_plan.sample_count):
+        residual = _normalized_line_residual(
+            context.spec,
+            float(x[index]),
+            float(y[index]),
+        )
+        if residual > context.policy.maximum_residual_ulps * _FLOAT64_EPSILON:
+            return _numeric_range_error(
+                context.spec.item_id,
+                "approved line endpoint residual exceeds the hard threshold",
+            )
+        if residual > context.policy.target_residual_ulps * _FLOAT64_EPSILON:
+            precision_limited = True
+
+    metadata = (
+        SampledSegmentMetadata(
+            mathematical_branch_id=0,
+            closure=SegmentClosure.OPEN,
+        ),
+    )
+    diagnostics = ParameterizedSamplingDiagnostics(
+        sampled_segment_count=1,
+        sampled_point_count=context.item_plan.sample_count,
+    )
+    warnings = [
+        SamplingWarning(
+            code=SamplingWarningCode.VIEWPORT_CLIPPED,
+            metrics=ViewportClippedMetrics(clipped_segment_count=1),
+        ),
+    ]
+    if precision_limited:
+        warnings.append(
+            SamplingWarning(
+                code=SamplingWarningCode.SAMPLING_PRECISION_LIMITED,
+                metrics=SamplingPrecisionLimitedMetrics(limited_segment_count=1),
+            ),
+        )
+
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    try:
+        segment_ranges = np.empty((1, 2), dtype=np.int64)
+        segment_ranges[0, 0] = 0
+        segment_ranges[0, 1] = context.item_plan.sample_count
+    except MemoryError:
+        return _allocation_error(context.spec.item_id, "line segment-range allocation failed")
+    except (IndexError, TypeError, ValueError):
+        return _contract_error(context.spec.item_id, "line segment-range construction failed")
+    if (
+        type(segment_ranges) is not np.ndarray
+        or segment_ranges.dtype != np.dtype(np.int64)
+        or segment_ranges.shape != (1, 2)
+        or not segment_ranges.flags.owndata
+        or not segment_ranges.flags.writeable
+    ):
+        return _contract_error(context.spec.item_id, "line segment ranges are invalid")
+
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    x.setflags(write=False)
+    y.setflags(write=False)
+    segment_ranges.setflags(write=False)
+    try:
+        sampled = SampledParameterizedCurve(
+            item_id=context.spec.item_id,
+            x=x,
+            y=y,
+            segment_ranges=segment_ranges,
+            segment_metadata=metadata,
+            visible_segment_count=1,
+            warnings=tuple(warnings),
+            diagnostics=diagnostics,
+        )
+        object.__setattr__(
+            sampled,
+            "_plan_contract_snapshot",
+            _snapshot_approved_render_plan(context.plan),
+        )
+        return sampled
+    except (AttributeError, TypeError, ValueError):
+        return _contract_error(
+            context.spec.item_id,
+            "frozen parameterized sampling result contract failed",
+        )
+
+
+def _validated_parameterized_sampling_context(
+    plan: RenderPlan,
+) -> _ParameterizedSamplingContext | ErrorInfo:
+    limits = DEFAULT_LIMITS
+    policy = DEFAULT_LINE_SAMPLING_POLICY
+    if plan.limits_version != limits.version:
+        return _contract_error(None, "render plan limits version is not active")
+    if type(plan.scene_spec) is not PlotSceneSpec or len(plan.scene_spec.items) != 1:
+        return _contract_error(None, "render plan must contain one exact scene specification")
+    spec = plan.scene_spec.items[0]
+    if type(spec) in {CircleSpec, EllipseSpec, HyperbolaSpec, ParabolaSpec}:
+        return _contract_error(
+            spec.item_id,
+            "parameterized geometry strategy is not implemented in stage 14B-2",
+        )
+    if type(spec) is not LineSpec:
+        return _contract_error(None, "render plan item is not an exact LineSpec")
+    if plan.sampling_policy_version != policy.version:
+        return _contract_error(spec.item_id, "line sampling policy version is not active")
+    if plan.numeric_executor_contract_version is not None:
+        return _contract_error(spec.item_id, "line plan must not carry a numeric executor version")
+    if (
+        plan.parameterized_sampler_contract_version
+        != PARAMETERIZED_SAMPLER_CONTRACT_VERSION
+    ):
+        return _contract_error(spec.item_id, "parameterized sampler version is not active")
+    if type(plan.resolved_viewport) is not ResolvedViewport:
+        return _contract_error(spec.item_id, "line plan viewport is not exact")
+    if type(plan.item_plan) is not GeometryRenderItemPlan:
+        return _contract_error(spec.item_id, "line item plan is missing")
+    if type(plan.memory_budget) is not ParameterizedRenderMemoryBudget:
+        return _contract_error(spec.item_id, "line memory budget is missing")
+    item_plan = plan.item_plan
+    budget = plan.memory_budget
+    if len(item_plan.segments) != 1 or type(item_plan.segments[0]) is not LineSegmentPlan:
+        return _contract_error(spec.item_id, "line plan must contain one exact segment")
+    segment = item_plan.segments[0]
+    try:
+        plan.scene_spec.__post_init__()
+        spec.__post_init__()
+        plan.resolved_viewport.__post_init__()
+        item_plan.__post_init__()
+        segment.__post_init__()
+        budget.__post_init__()
+        policy.__post_init__()
+        recomputed_budget = build_line_parameterized_memory_budget(
+            image_width=plan.image_width,
+            image_height=plan.image_height,
+            limits=limits,
+        )
+    except MemoryError:
+        return _allocation_error(spec.item_id, "line budget revalidation allocation failed")
+    except (AttributeError, TypeError, ValueError):
+        return _contract_error(spec.item_id, "approved line plan contains an invalid contract")
+    if spec.provenance.limits_version != limits.version or item_plan.item_id != spec.item_id:
+        return _contract_error(spec.item_id, "line plan item identity or limits mismatch")
+    if recomputed_budget != budget:
+        return _contract_error(spec.item_id, "line parameterized budget is not active")
+    try:
+        limits.validate_scene_resources(
+            item_count=1,
+            sample_points_per_item=item_plan.sample_count,
+            total_sample_points=item_plan.sample_count,
+            branches_per_item=item_plan.max_segment_count,
+            total_branches=item_plan.max_segment_count,
+            estimated_memory_bytes=budget.total_bytes,
+        )
+    except (TypeError, ValueError):
+        return _parameterized_resource_error(
+            spec.item_id,
+            "approved line plan exceeds active scene resource limits",
+        )
+    return _ParameterizedSamplingContext(
+        plan=plan,
+        spec=spec,
+        viewport=plan.resolved_viewport,
+        item_plan=item_plan,
+        segment=segment,
+        memory_budget=budget,
+        limits=limits,
+        policy=policy,
+    )
 
 
 def _sample_approved_explicit_function(
@@ -1046,6 +1361,18 @@ def _frozen_owned_ranges(value: object) -> None:
         raise ValueError("segment_ranges must own read-only data.")
 
 
+def _normalized_line_residual(spec: LineSpec, x: float, y: float) -> Fraction:
+    exact_x = Fraction.from_float(x)
+    exact_y = Fraction.from_float(y)
+    numerator = abs(spec.d * exact_x + spec.e * exact_y + spec.f)
+    scale = (
+        abs(spec.d) * max(Fraction(1), abs(exact_x))
+        + abs(spec.e) * max(Fraction(1), abs(exact_y))
+        + abs(spec.f)
+    )
+    return numerator / scale
+
+
 def _positive_int(value: object, name: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{name} must be an integer.")
@@ -1083,6 +1410,28 @@ def _allocation_error(item_id: str | None, technical_message: str) -> ErrorInfo:
         technical_message=technical_message,
         item_id=item_id,
         field_name="sampling_memory",
+        recoverable=True,
+    )
+
+
+def _parameterized_resource_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.RESOURCE_LIMIT_EXCEEDED,
+        user_message="参数化直线超过当前资源限制，请缩小输出规模后重试。",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="parameterized_budget",
+        recoverable=True,
+    )
+
+
+def _numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
+        user_message="直线端点超出当前可保证的数值精度范围。",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="line_residual",
         recoverable=True,
     )
 
@@ -1130,4 +1479,5 @@ __all__ = [
     "SamplingWarningMetrics",
     "ViewportClippedMetrics",
     "sample_explicit_function",
+    "sample_parameterized_curve",
 ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fractions import Fraction
 from math import isfinite
 
 import numpy as np
@@ -13,6 +14,9 @@ from math_drawing_assistant.engine.numeric_executor import (
     NumericExecutionResult,
     estimate_numeric_execution_cost,
     execute_explicit_function,
+)
+from math_drawing_assistant.engine.parameterized_budget import (
+    estimate_line_exact_workspace_bytes,
 )
 from math_drawing_assistant.models.errors import (
     ErrorCode,
@@ -96,6 +100,8 @@ def resolve_single_item_viewport(
         return _resolve_manual(request, aspect=aspect, limits=limits)
     if type(spec) is ExplicitFunctionSpec:
         return _resolve_auto(spec, request, aspect=aspect, limits=limits)
+    if type(spec) is LineSpec:
+        return _resolve_auto_line(spec, request, aspect=aspect, limits=limits)
     return _failure(
         _contract_error(
             "viewport_strategy",
@@ -347,6 +353,187 @@ def _resolve_auto(
             limits=limits,
         )
     return ViewportResolution(viewport=resolved_or_error)
+
+
+def _resolve_auto_line(
+    spec: LineSpec,
+    request: ViewportRequest,
+    *,
+    aspect: ResolvedAspect,
+    limits: ApplicationLimits,
+) -> ViewportResolution:
+    """Resolve one exact general line without probing or fallback."""
+
+    if request.y_min is not None or request.y_max is not None:
+        return _failure(
+            _invalid_viewport(
+                "y_min" if request.y_min is not None else "y_max",
+                "automatic line viewports derive both y bounds",
+            ),
+        )
+    x_bounds_or_error = _auto_x_bounds(request, limits=limits)
+    if isinstance(x_bounds_or_error, ErrorInfo):
+        return _failure(x_bounds_or_error)
+    x_min, x_max, uses_default_x = x_bounds_or_error
+
+    try:
+        exact_workspace_bytes = estimate_line_exact_workspace_bytes(limits)
+    except MemoryError:
+        return _failure(_line_probe_budget_error(spec.item_id, "workspace estimate failed"))
+    except (AttributeError, TypeError, ValueError):
+        return _failure(
+            _contract_error(
+                "viewport_limits",
+                "line exact-workspace contract mismatch",
+                item_id=spec.item_id,
+            ),
+        )
+    if exact_workspace_bytes > limits.max_viewport_probe_bytes:
+        return _failure(
+            _line_probe_budget_error(
+                spec.item_id,
+                "line exact workspace exceeds max_viewport_probe_bytes",
+            ),
+        )
+
+    try:
+        denominator = spec.d * spec.d + spec.e * spec.e
+        anchor_x = Fraction(-spec.d * spec.f, denominator)
+        anchor_y = Fraction(-spec.e * spec.f, denominator)
+        if uses_default_x:
+            x_exact = _bounded_exact_centered_range(
+                anchor_x,
+                Fraction(limits.default_auto_x_max - limits.default_auto_x_min),
+                limits=limits,
+            )
+            y_exact = _bounded_exact_centered_range(
+                anchor_y,
+                Fraction(limits.fallback_auto_y_max - limits.fallback_auto_y_min),
+                limits=limits,
+            )
+            if x_exact is None or y_exact is None:
+                return _failure(
+                    _numeric_range_error(
+                        spec.item_id,
+                        "line anchor cannot be enclosed by the configured viewport",
+                    ),
+                )
+            x_values = _finite_fraction_range(x_exact)
+            y_values = _finite_fraction_range(y_exact)
+        else:
+            x_values = (x_min, x_max)
+            if spec.e == 0:
+                y_exact = _bounded_exact_centered_range(
+                    anchor_y,
+                    Fraction(limits.fallback_auto_y_max - limits.fallback_auto_y_min),
+                    limits=limits,
+                )
+            else:
+                left_x = Fraction.from_float(x_min)
+                right_x = Fraction.from_float(x_max)
+                left_y = -(spec.d * left_x + spec.f) / spec.e
+                right_y = -(spec.d * right_x + spec.f) / spec.e
+                lower_y = min(left_y, right_y)
+                upper_y = max(left_y, right_y)
+                data_span = upper_y - lower_y
+                padding = max(
+                    Fraction(limits.viewport_absolute_padding),
+                    data_span
+                    * Fraction(limits.viewport_relative_padding_percent, 100),
+                )
+                chosen_span = max(
+                    Fraction(limits.min_viewport_span),
+                    Fraction(2 * limits.viewport_absolute_padding),
+                    data_span + 2 * padding,
+                )
+                y_exact = _bounded_exact_centered_range(
+                    (lower_y + upper_y) / 2,
+                    chosen_span,
+                    limits=limits,
+                )
+            if y_exact is None:
+                return _failure(
+                    _numeric_range_error(
+                        spec.item_id,
+                        "derived line y range is outside the supported numeric range",
+                    ),
+                )
+            y_values = _finite_fraction_range(y_exact)
+        if x_values is None or y_values is None:
+            return _failure(
+                _numeric_range_error(
+                    spec.item_id,
+                    "derived line viewport cannot be represented as finite float64",
+                ),
+            )
+    except MemoryError:
+        return _failure(_line_probe_budget_error(spec.item_id, "exact line workspace failed"))
+    except (OverflowError, ZeroDivisionError):
+        return _failure(
+            _numeric_range_error(
+                spec.item_id,
+                "exact line viewport arithmetic is outside the supported range",
+            ),
+        )
+
+    resolved_or_error = _resolved_viewport(
+        x_values[0],
+        x_values[1],
+        y_values[0],
+        y_values[1],
+        aspect,
+        ViewportSource.AUTO_GEOMETRY,
+        limits=limits,
+    )
+    if isinstance(resolved_or_error, ErrorInfo):
+        return _failure(
+            _numeric_range_error(
+                spec.item_id,
+                "derived line viewport is outside the configured finite range",
+            ),
+        )
+    return ViewportResolution(viewport=resolved_or_error)
+
+
+def _bounded_exact_centered_range(
+    center: Fraction,
+    span: Fraction,
+    *,
+    limits: ApplicationLimits,
+) -> tuple[Fraction, Fraction] | None:
+    """Center a fixed span and translate it at the absolute boundary without shrinking."""
+
+    absolute_limit = Fraction(limits.max_viewport_absolute_coordinate)
+    if span <= 0 or span > 2 * absolute_limit:
+        return None
+    if center < -absolute_limit or center > absolute_limit:
+        return None
+    lower = center - span / 2
+    upper = center + span / 2
+    if lower < -absolute_limit:
+        shift = -absolute_limit - lower
+        lower += shift
+        upper += shift
+    if upper > absolute_limit:
+        shift = absolute_limit - upper
+        lower += shift
+        upper += shift
+    if lower >= upper or lower < -absolute_limit or upper > absolute_limit:
+        return None
+    return (lower, upper)
+
+
+def _finite_fraction_range(
+    values: tuple[Fraction, Fraction],
+) -> tuple[float, float] | None:
+    try:
+        lower = float(values[0])
+        upper = float(values[1])
+    except OverflowError:
+        return None
+    if not isfinite(lower) or not isfinite(upper) or lower >= upper:
+        return None
+    return (lower, upper)
 
 
 def _request_bounds(
@@ -651,6 +838,28 @@ def _contract_error(
         item_id=item_id,
         field_name=field_name,
         recoverable=False,
+    )
+
+
+def _line_probe_budget_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.VIEWPORT_PROBE_BUDGET_EXCEEDED,
+        user_message="Automatic line viewport calculation exceeds the configured budget.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="max_viewport_probe_bytes",
+        recoverable=True,
+    )
+
+
+def _numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
+        user_message="The line is outside the currently supported numeric range.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="viewport_numeric_range",
+        recoverable=True,
     )
 
 
