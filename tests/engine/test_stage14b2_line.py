@@ -306,12 +306,12 @@ def test_auto_line_anchor_outside_supported_viewport_has_no_fallback() -> None:
     assert result.viewport is None
 
 
-def test_parabola_auto_viewport_remains_strategy_error() -> None:
+def test_parabola_auto_viewport_is_active() -> None:
     text = "x^2=4*y"
     result = resolve_single_item_viewport(_scene(text), ViewportRequest())
-    assert result.error is not None
-    assert result.error.code is ErrorCode.INTERNAL_ERROR
-    assert result.error.field_name == "viewport_strategy"
+    assert result.error is None
+    assert result.viewport is not None
+    assert result.viewport.source is ViewportSource.AUTO_GEOMETRY
 
 
 @pytest.mark.parametrize("text", ["x^2+y^2=25", "4*x^2+9*y^2=36"])
@@ -592,12 +592,13 @@ def test_unapproved_line_plan_is_rejected_before_allocation(
     assert result.code is ErrorCode.INTERNAL_ERROR
 
 
-def test_builder_does_not_approve_parabola() -> None:
+def test_builder_approves_parabola() -> None:
     text = "x^2=4*y"
     result = _build(text)
-    assert type(result) is ErrorInfo
-    assert result.code is ErrorCode.INTERNAL_ERROR
-    assert result.field_name == "geometry_strategy"
+    assert type(result) is RenderPlan
+    assert type(result.item_plan) is GeometryRenderItemPlan
+    assert result.item_plan.mathematical_branch_count == 1
+    assert result.item_plan.max_segment_count == 2
 
 
 @pytest.mark.parametrize("text", ["x^2+y^2=25", "4*x^2+9*y^2=36"])

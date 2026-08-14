@@ -325,16 +325,16 @@ def test_auto_oval_never_uses_explicit_probe_executor_or_fallback(
     assert result.viewport.source is ViewportSource.AUTO_GEOMETRY
 
 
-def test_parabola_auto_viewport_remains_strategy_error() -> None:
+def test_parabola_auto_viewport_is_active() -> None:
     text = "x^2=4*y"
     item = analyze_plot_item(
         PlotItemRequest("future", text, InputSource.MANUAL, PlotKind.AUTO, 0),
     )
     assert not isinstance(item, ErrorInfo)
     result = resolve_single_item_viewport(PlotSceneSpec((item,)), ViewportRequest())
-    assert result.error is not None
-    assert result.error.code is ErrorCode.INTERNAL_ERROR
-    assert result.error.field_name == "viewport_strategy"
+    assert result.error is None
+    assert result.viewport is not None
+    assert result.viewport.source is ViewportSource.AUTO_GEOMETRY
 
 
 def test_full_oval_plan_is_one_closed_turn_with_fixed_branch_and_capacity() -> None:

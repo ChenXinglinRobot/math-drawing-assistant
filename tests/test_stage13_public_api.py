@@ -17,6 +17,7 @@ from math_drawing_assistant.models import (
     AxisOrientation,
     CircleSpec,
     DEFAULT_HYPERBOLIC_SAMPLING_POLICY,
+    DEFAULT_PARABOLIC_SAMPLING_POLICY,
     EllipseSpec,
     EquationProvenance,
     ErrorCode,
@@ -27,6 +28,7 @@ from math_drawing_assistant.models import (
     InputSource,
     LineSpec,
     ParabolaOpening,
+    ParabolicSamplingPolicy,
     ParabolaSpec,
     PlotItemRequest,
     PlotItemSpec,
@@ -68,6 +70,7 @@ _EXPECTED_MODEL_EXPORTS = frozenset(
         "DEFAULT_EXPLICIT_SAMPLING_POLICY",
         "DEFAULT_HYPERBOLIC_SAMPLING_POLICY",
         "DEFAULT_LINE_SAMPLING_POLICY",
+        "DEFAULT_PARABOLIC_SAMPLING_POLICY",
         "EllipseSpec",
         "EquationProvenance",
         "ErrorCode",
@@ -88,6 +91,7 @@ _EXPECTED_MODEL_EXPORTS = frozenset(
         "LineSegmentPlan",
         "NumberNode",
         "ParabolaOpening",
+        "ParabolicSamplingPolicy",
         "ParabolaSpec",
         "PlotItemRequest",
         "PlotItemResult",
@@ -285,6 +289,33 @@ def test_models_package_publishes_the_stage_13_contract_by_identity() -> None:
         policy.samples_per_pixel = 2  # type: ignore[misc]
     assert not hasattr(policy, "__dict__")
 
+    assert (
+        public_models.ParabolicSamplingPolicy
+        is implementation_render_plan.ParabolicSamplingPolicy
+        is ParabolicSamplingPolicy
+    )
+    assert (
+        public_models.DEFAULT_PARABOLIC_SAMPLING_POLICY
+        is implementation_render_plan.DEFAULT_PARABOLIC_SAMPLING_POLICY
+        is DEFAULT_PARABOLIC_SAMPLING_POLICY
+    )
+    parabolic_policy = DEFAULT_PARABOLIC_SAMPLING_POLICY
+    assert type(parabolic_policy) is ParabolicSamplingPolicy
+    assert tuple(
+        getattr(parabolic_policy, field.name) for field in fields(parabolic_policy)
+    ) == (
+        "parabolic-sampling-policy-v1",
+        1,
+        2,
+        4_096,
+        8,
+        8,
+        32,
+        256,
+        256,
+    )
+    assert not hasattr(parabolic_policy, "__dict__")
+
 
 def test_engine_package_publishes_only_the_stage_13_entry_point() -> None:
     assert set(public_engine.__all__) == _EXPECTED_ENGINE_EXPORTS
@@ -356,7 +387,7 @@ def test_supported_formulas_records_the_completed_stage_13_contract() -> None:
         "<!-- LIMIT_FIELD_INDEX_END -->",
     )
 
-    assert "文档版本：stage-14d1-hyperbola-sampling-v1" in document
+    assert "文档版本：stage-14d2-parabola-sampling-v1" in document
     assert "阶段 13A 至 13E 已完成" in status
     assert "analyze_plot_item" in document
     assert "LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec" in document

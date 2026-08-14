@@ -125,6 +125,76 @@ _HYPERBOLA_EXACT_LIVE_BIGINT_VALUES = (
     "comparison_cross_product_left",
     "comparison_cross_product_right",
 )
+_PARABOLA_SEGMENT_CAPACITY = 2
+_PARABOLA_PARAMETER_ROOT_CAPACITY = 6
+_PARABOLA_INTERVAL_CAPACITY = 2
+# Actual named exact integers simultaneously live in the visibility/topology phase.
+# Bound objects retain the referenced cross/q Fraction integers; they do not copy them.
+_PARABOLA_INTERVAL_EXACT_LIVE_BIGINT_VALUES = (
+    "coefficient_a",
+    "coefficient_c",
+    "coefficient_d",
+    "coefficient_e",
+    "coefficient_f",
+    "vertex_x_numerator",
+    "vertex_x_denominator",
+    "vertex_y_numerator",
+    "vertex_y_denominator",
+    "focal_parameter_numerator",
+    "focal_parameter_denominator",
+    "viewport_left_numerator",
+    "viewport_left_denominator",
+    "viewport_right_numerator",
+    "viewport_right_denominator",
+    "viewport_bottom_numerator",
+    "viewport_bottom_denominator",
+    "viewport_top_numerator",
+    "viewport_top_denominator",
+    "cross_lower_numerator",
+    "cross_lower_denominator",
+    "cross_upper_numerator",
+    "cross_upper_denominator",
+    "q_lower_numerator",
+    "q_lower_denominator",
+    "q_upper_numerator",
+    "q_upper_denominator",
+    "comparison_rational_square_numerator",
+    "comparison_rational_square_denominator",
+    "comparison_cross_product_left",
+    "comparison_cross_product_right",
+)
+# Actual named exact integers simultaneously live in one normalized residual and its
+# ULP threshold comparison.  The interval phase has the larger liveness count.
+_PARABOLA_RESIDUAL_EXACT_LIVE_BIGINT_VALUES = (
+    "coefficient_a",
+    "coefficient_c",
+    "coefficient_d",
+    "coefficient_e",
+    "coefficient_f",
+    "vertex_x_numerator",
+    "vertex_x_denominator",
+    "vertex_y_numerator",
+    "vertex_y_denominator",
+    "focal_parameter_numerator",
+    "focal_parameter_denominator",
+    "float_x_numerator",
+    "float_x_denominator",
+    "float_y_numerator",
+    "float_y_denominator",
+    "x_square_numerator",
+    "x_square_denominator",
+    "y_square_numerator",
+    "y_square_denominator",
+    "polynomial_numerator",
+    "polynomial_denominator",
+    "scale_numerator",
+    "scale_denominator",
+    "residual_numerator",
+    "residual_denominator",
+    "comparison_cross_product_left",
+    "comparison_cross_product_right",
+)
+_PARABOLA_EXACT_LIVE_BIGINT_VALUES = _PARABOLA_INTERVAL_EXACT_LIVE_BIGINT_VALUES
 
 
 def _axis_aligned_conic_exact_max_integer_bits(limits: ApplicationLimits) -> int:
@@ -265,6 +335,26 @@ def estimate_hyperbola_exact_workspace_bytes(limits: ApplicationLimits) -> int:
     ) // sys.int_info.bits_per_digit
     bytes_per_bigint = sys.getsizeof(0) + bigint_digits * sys.int_info.sizeof_digit
     return len(_HYPERBOLA_EXACT_LIVE_BIGINT_VALUES) * bytes_per_bigint
+
+
+def estimate_parabola_exact_workspace_bytes(limits: ApplicationLimits) -> int:
+    """Bound simultaneous Python integers used by exact parabola arithmetic."""
+
+    # The shared bound covers the parabola as well: its vertex and focal parameter
+    # use no wider products than the center/axis-square construction, while
+    # (edge-vertex)/(2p), (axis-edge)/p, rational-vs-sqrt(q) comparisons, and the
+    # primitive normalized residual are bounded respectively by the existing
+    # 5*C+2*F+6 and C+6*F+56 terms.  No empirical multiplier is used.
+    max_integer_bits = _axis_aligned_conic_exact_max_integer_bits(limits)
+    bigint_digits = (
+        max_integer_bits + sys.int_info.bits_per_digit - 1
+    ) // sys.int_info.bits_per_digit
+    bytes_per_bigint = sys.getsizeof(0) + bigint_digits * sys.int_info.sizeof_digit
+    live_count = max(
+        len(_PARABOLA_INTERVAL_EXACT_LIVE_BIGINT_VALUES),
+        len(_PARABOLA_RESIDUAL_EXACT_LIVE_BIGINT_VALUES),
+    )
+    return live_count * bytes_per_bigint
 
 
 def build_oval_parameterized_memory_budget(
@@ -453,6 +543,96 @@ def plan_hyperbola_batch_size(
         + _BOOL_BYTES
         + _FLOAT64_BYTES
     )
+    available_growth = limits.max_estimated_memory_bytes - minimum_budget.total_bytes
+    return min(preferred, 1 + available_growth // one_point_batch_bytes)
+
+
+def build_parabola_parameterized_memory_budget(
+    *,
+    sample_count: int,
+    batch_size: int,
+    image_width: int,
+    image_height: int,
+    limits: ApplicationLimits,
+) -> ParameterizedRenderMemoryBudget:
+    """Return the single shared ParabolaSpec budget used by Builder and sampler."""
+
+    for name, value in (
+        ("sample_count", sample_count),
+        ("batch_size", batch_size),
+        ("image_width", image_width),
+        ("image_height", image_height),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer.")
+        if value < 1:
+            raise ValueError(f"{name} must be positive.")
+    if batch_size > sample_count:
+        raise ValueError("batch_size must not exceed sample_count.")
+    if type(limits) is not ApplicationLimits:
+        raise TypeError("parabola budget requires exact ApplicationLimits.")
+    limits.__post_init__()
+
+    final_vector_bytes = sample_count * _FLOAT64_BYTES
+    exact_workspace_bytes = estimate_parabola_exact_workspace_bytes(limits)
+    interval_planning_bytes = (
+        _PARABOLA_PARAMETER_ROOT_CAPACITY * _FLOAT64_BYTES
+        + _PARABOLA_PARAMETER_ROOT_CAPACITY * _BOOL_BYTES
+        + _PARABOLA_INTERVAL_CAPACITY * 2 * _FLOAT64_BYTES
+    )
+    return ParameterizedRenderMemoryBudget(
+        final_x_bytes=final_vector_bytes,
+        final_y_bytes=final_vector_bytes,
+        artist_data_bytes=2 * final_vector_bytes,
+        segment_index_range_bytes=(
+            _PARABOLA_SEGMENT_CAPACITY * 2 * _INT64_BYTES
+        ),
+        segment_metadata_bytes=(
+            _PARABOLA_SEGMENT_CAPACITY * 2 * _INT64_BYTES
+        ),
+        parameter_batch_bytes=batch_size * _FLOAT64_BYTES,
+        transcendental_workspace_bytes=0,
+        validation_workspace_bytes=(
+            exact_workspace_bytes
+            + interval_planning_bytes
+            + batch_size * _BOOL_BYTES
+            + batch_size * _FLOAT64_BYTES
+        ),
+        rgba_canvas_bytes=image_width * image_height * _RGBA_BYTES_PER_PIXEL,
+        png_buffer_reserve_bytes=limits.max_png_bytes,
+        png_copy_bytes=limits.max_png_bytes,
+    )
+
+
+def plan_parabola_batch_size(
+    *,
+    sample_count: int,
+    preferred_batch_points: int,
+    image_width: int,
+    image_height: int,
+    limits: ApplicationLimits,
+) -> int:
+    """Derive the largest approved deterministic parabola batch, capped at policy."""
+
+    for name, value in (
+        ("sample_count", sample_count),
+        ("preferred_batch_points", preferred_batch_points),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer.")
+        if value < 1:
+            raise ValueError(f"{name} must be positive.")
+    preferred = min(sample_count, preferred_batch_points, 4_096)
+    minimum_budget = build_parabola_parameterized_memory_budget(
+        sample_count=sample_count,
+        batch_size=1,
+        image_width=image_width,
+        image_height=image_height,
+        limits=limits,
+    )
+    if minimum_budget.total_bytes > limits.max_estimated_memory_bytes:
+        raise ValueError("parabola budget cannot fit a one-point batch.")
+    one_point_batch_bytes = _FLOAT64_BYTES + _BOOL_BYTES + _FLOAT64_BYTES
     available_growth = limits.max_estimated_memory_bytes - minimum_budget.total_bytes
     return min(preferred, 1 + available_growth // one_point_batch_bytes)
 

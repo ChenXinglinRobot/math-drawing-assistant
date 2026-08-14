@@ -988,15 +988,15 @@ def test_sampler_does_not_reenter_resolver_builder_or_interval_planner(
     assert type(result) is SampledParameterizedCurve
 
 
-def test_parabola_remains_strategy_error_and_contour_application_layers_are_untouched() -> None:
+def test_parabola_is_active_while_contour_application_layers_remain_untouched() -> None:
     item = analyze_plot_item(
         PlotItemRequest("p", "x^2=4*y", InputSource.MANUAL, PlotKind.AUTO, 0),
     )
     assert not isinstance(item, ErrorInfo)
     resolution = resolve_single_item_viewport(PlotSceneSpec((item,)), ViewportRequest())
-    assert resolution.error is not None
-    assert resolution.error.code is ErrorCode.INTERNAL_ERROR
-    assert resolution.error.field_name == "viewport_strategy"
+    assert resolution.error is None
+    assert resolution.viewport is not None
+    assert resolution.viewport.source is ViewportSource.AUTO_GEOMETRY
 
     for path in (
         "math_drawing_assistant/engine/renderer.py",

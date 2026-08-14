@@ -213,7 +213,7 @@ def _geometry_item_plan(spec: PlotItemSpec) -> GeometryRenderItemPlan:
 def _approved_geometry_plan(text: str) -> RenderPlan:
     scene = _scene(text)
     spec = scene.items[0]
-    if type(spec) is HyperbolaSpec:
+    if type(spec) in {HyperbolaSpec, ParabolaSpec}:
         built = RenderPlanBuilder().build(
             scene,
             _viewport(),
@@ -360,12 +360,12 @@ def test_manual_geometry_resolves_without_probe_or_fallback(
     assert result.viewport.source is ViewportSource.MANUAL
 
 
-def test_parabola_auto_geometry_is_nonrecoverable_strategy_failure_before_probe(
+def test_parabola_auto_geometry_uses_exact_strategy_before_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     text = "x^2=4*y"
     def forbidden(*args: object, **kwargs: object) -> object:
-        raise AssertionError("unimplemented conic auto geometry must not probe or estimate")
+        raise AssertionError("parabola auto geometry must not probe or estimate")
 
     monkeypatch.setattr(viewport_resolver.np, "linspace", forbidden)
     monkeypatch.setattr(viewport_resolver, "execute_explicit_function", forbidden)
@@ -373,10 +373,10 @@ def test_parabola_auto_geometry_is_nonrecoverable_strategy_failure_before_probe(
 
     result = resolve_single_item_viewport(_scene(text), ViewportRequest())
 
-    assert result.error is not None
-    assert result.error.code is ErrorCode.INTERNAL_ERROR
-    assert result.error.field_name == "viewport_strategy"
-    assert result.error.recoverable is False
+    assert result.error is None
+    assert result.viewport is not None
+    assert result.viewport.source is ViewportSource.AUTO_GEOMETRY
+    assert result.viewport.aspect is ResolvedAspect.EQUAL
     assert result.warning is None
 
 
@@ -493,11 +493,10 @@ def test_approval_rejects_version_memory_and_spec_plan_crosses() -> None:
         render_plan_model._approve_render_plan(ordinary_explicit)
 
 
-def test_parameterized_sampler_keeps_parabola_behind_strategy_error() -> None:
+def test_parameterized_sampler_accepts_builder_approved_parabola() -> None:
     text = "x^2=4*y"
     result = sample_parameterized_curve(_approved_geometry_plan(text))
-    assert type(result) is ErrorInfo
-    assert result.code is ErrorCode.INTERNAL_ERROR
+    assert type(result) is SampledParameterizedCurve
 
 
 @pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES[1:3]])
@@ -580,11 +579,11 @@ def test_approval_rejects_missing_explicit_numeric_executor_version() -> None:
         render_plan_model._approve_render_plan(invalid_plan)
 
 
-def test_parabola_builder_failure_precedes_numeric_cost_and_has_no_bypass(
+def test_parabola_builder_uses_geometry_path_before_numeric_cost_and_has_no_bypass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def forbidden(*args: object, **kwargs: object) -> object:
-        raise AssertionError("geometry builder must fail before numeric cost")
+        raise AssertionError("geometry builder must not enter numeric cost")
 
     monkeypatch.setattr(render_plan_builder, "estimate_numeric_execution_cost", forbidden)
     result = RenderPlanBuilder().build(
@@ -597,10 +596,10 @@ def test_parabola_builder_failure_precedes_numeric_cost_and_has_no_bypass(
         show_legend=False,
     )
 
-    assert type(result) is ErrorInfo
-    assert result.code is ErrorCode.INTERNAL_ERROR
-    assert result.field_name == "geometry_strategy"
-    assert result.recoverable is False
+    assert type(result) is RenderPlan
+    assert type(result.item_plan) is GeometryRenderItemPlan
+    assert result.item_plan.mathematical_branch_count == 1
+    assert result.item_plan.max_segment_count == 2
     assert "GeometryRenderItemPlan" not in signature(RenderPlanBuilder.build).parameters
 
 

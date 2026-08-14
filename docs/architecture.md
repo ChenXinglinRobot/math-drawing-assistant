@@ -2,7 +2,7 @@
 
 版本：v0.1  
 最后更新：2026-08-09
-状态：实施中的架构基线（Stage 14B-2 已实现 exact 一般直线；Stage 14C 已实现圆/椭圆；Stage 14D-1 已在同一审批链路实现双曲线两支、有限可见区间与安全参数化采样；抛物线、Stage 14E、Stage 15 及应用整合尚未实施）
+状态：实施中的架构基线（Stage 14B-2 已实现 exact 一般直线；Stage 14C 已实现圆/椭圆；Stage 14D-1 已实现双曲线；Stage 14D-2 已在同一审批链路实现四向平移抛物线的有限可见区间与安全参数化采样；Stage 14E、Stage 15 及应用整合尚未实施）
 
 ## 1. 文档职责与事实来源
 
@@ -294,9 +294,9 @@ M1.5 支持的图形、方程、精确系数、隐式乘法继承、M1 路由和
 
 通用二维 contour 不是受限直线/圆锥曲线的默认主实现。它只可作为诊断对照或未来任意隐式曲线方案的独立原型，不能绕过当前 OUT 范围。
 
-### 7.4 Stage 14B/14C/14D-1 公共契约、参数化原型与阶段边界
+### 7.4 Stage 14B/14C/14D-1/14D-2 公共契约、参数化原型与阶段边界
 
-Stage 14B-1 把既有 M1 显函数链路扩展为可容纳 Stage 13 六种 exact Spec 的统一公共边界；Stage 14B-2 在该边界内放行 exact、非退化 `LineSpec`；Stage 14C 沿用同一边界放行 `CircleSpec | EllipseSpec`；Stage 14D-1 继续沿用该边界放行 `HyperbolaSpec`。正式单项数据流固定为：
+Stage 14B-1 把既有 M1 显函数链路扩展为可容纳 Stage 13 六种 exact Spec 的统一公共边界；Stage 14B-2 在该边界内放行 exact、非退化 `LineSpec`；Stage 14C 沿用同一边界放行 `CircleSpec | EllipseSpec`；Stage 14D-1 放行 `HyperbolaSpec`；Stage 14D-2 继续沿用同一边界放行 `ParabolaSpec`。正式单项数据流固定为：
 
 ```text
 Stage 13 typed PlotSceneSpec
@@ -310,7 +310,7 @@ Stage 13 typed PlotSceneSpec
 
 `resolve_single_explicit_viewport` 与 `build_single_explicit_render_plan` 保留原签名，仅作为统一实现的兼容 wrapper；不得保留第二套 resolver、Builder 或绕过 RenderPlan/receipt 的采样入口。
 
-Stage 14B-2/14C/14D-1 的直接原型沿用同一条链路：`analyze_plot_item → PlotSceneSpec → resolve_single_item_viewport → RenderPlanBuilder.build → sample_parameterized_curve`。resolver 负责唯一的视口解析，Builder 负责 exact 边界几何、可见 segment 规划并签发现有 receipt，sampler 只消费已批准端点或参数区间；sampler 不重新解析视口、不重新求交/规划区间，也不调用 Builder。
+Stage 14B-2/14C/14D-1/14D-2 的直接原型沿用同一条链路：`analyze_plot_item → PlotSceneSpec → resolve_single_item_viewport → RenderPlanBuilder.build → sample_parameterized_curve`。resolver 负责唯一的视口解析，Builder 负责 exact 边界几何、可见 segment 规划并签发现有 receipt，sampler 只消费已批准端点或参数区间；sampler 不重新解析视口、不重新求交/规划区间，也不调用 Builder。
 
 用户意图与解析结果使用两个 exact enum：
 
@@ -320,7 +320,7 @@ Stage 14B-2/14C/14D-1 的直接原型沿用同一条链路：`analyze_plot_item 
 * exact `LineSpec` 自动视口使用有界 exact arithmetic，成功 source 为 `ViewportSource.AUTO_GEOMETRY`；它不运行显函数 probe 或 fallback；
 * exact `CircleSpec | EllipseSpec` 自动视口从完整数学包围盒推导，应用集中 padding/span/coordinate limits，成功 source 为 `AUTO_GEOMETRY`；它不运行显函数 probe 或 fallback；
 * exact `HyperbolaSpec` 自动视口从有限教学窗口推导：水平横轴为 `x=h±sqrt(2*a²), y=k±sqrt(b²)`，垂直横轴交换坐标角色；outward float64 包围完成后复用 oval 的同一套 padding/span/coordinate limits，成功 source 为 `AUTO_GEOMETRY`，不运行 probe、numeric executor 或 fallback；
-* 抛物线自动视口仍不探测、不回退，返回不可恢复的 typed strategy error；手动视口仍可为六种 Spec 解析边界与比例。
+* exact `ParabolaSpec` 自动视口采用 `t∈[-1,1]` 的有限教学窗口：竖轴时 `x=h±2|p|` 且 y 覆盖 `k,k+p`，横轴时交换坐标角色；exact 边界 outward 转换后复用同一 padding/span/coordinate limits，成功 source 为 `AUTO_GEOMETRY`，不运行 probe、numeric executor 或 fallback。
 
 计划层保持一个顶层 `RenderPlan`，并形成两个封闭联合：
 
@@ -340,7 +340,7 @@ approval receipt 是内部 typed union。签发前和每次消费时都统一交
 | `ExplicitRenderItemPlan` | 当前 numeric executor version | `None` | exact `RenderMemoryBudget` |
 | `GeometryRenderItemPlan` | `None` | `parameterized-sampler-v1` | exact `ParameterizedRenderMemoryBudget` |
 
-`RenderMemoryBudget` 保持公开名称并新增 `segment_metadata_bytes`；参数化预算独立记录最终 x/y、artist、segment ranges/metadata、parameter batch、transcendental/validation workspace、RGBA canvas 与 PNG 缓冲/复制，提供 fixed、batch 和 total 求和。参数化预算不复用 numeric executor 的 `executor_extra_batch_bytes`。直线、圆/椭圆和双曲线分别由 Builder 与 sampler 调用各自唯一的共享参数化预算公式；Builder 在签发 plan 前审批完整预算，sampler 在第一次数组分配前重新计算并逐字段核对。
+`RenderMemoryBudget` 保持公开名称并新增 `segment_metadata_bytes`；参数化预算独立记录最终 x/y、artist、segment ranges/metadata、parameter batch、transcendental/validation workspace、RGBA canvas 与 PNG 缓冲/复制，提供 fixed、batch 和 total 求和。参数化预算不复用 numeric executor 的 `executor_extra_batch_bytes`。直线、圆/椭圆、双曲线和抛物线分别由 Builder 与 sampler 调用各自唯一的共享参数化预算公式；Builder 在签发 plan 前审批完整预算，sampler 在第一次数组分配前重新计算并逐字段核对。
 
 成功结果联合为：
 
@@ -363,7 +363,22 @@ Builder 先把最终 float64 viewport 边界还原为 exact `Fraction`，按分�
 
 `hyperbolic-sampling-policy-v1` 固定每像素 1 点、开放段至少 2 点、preferred batch 4096、parameter merge 与 viewport boundary 各 8 ULP、target/maximum residual 32/256 ULP、取消间隔 256。每段以最大绝对端点参数处的 `dx/dt,dy/dt` 像素空间范数为导数上界，点数为 `max(2, ceil(max_pixel_speed*parameter_span)+1)`。sampler 在首次数组分配前复算完整 hyperbola 预算和安全 sinh/cosh 范围，使用 `j/(N-1)` 并固定两端点，逐点用 primitive equation 的 exact normalized residual 复验；所有成功结果因数学曲线无界而报告 `VIEWPORT_CLIPPED`，32–256 ULP 报 `SAMPLING_PRECISION_LIMITED`，超过 256 ULP 或发生 branch/segment 数值坍缩则 typed 拒绝。
 
-Stage 14D-1 没有升级既有 RenderPlan、parameterized sampler 或 limits version，也没有新增第二套 resolver、receipt 或公开 sampler。抛物线、Stage 14D-2、Stage 14E、几何 renderer、`SceneRenderExecutor`、Actor、Controller 和 UI 仍未接入。P0-06 保持打开；这不表示 Stage 14、Stage 15 或 M1.5 完成，也未进入 Stage 15。
+Stage 14D-1 没有升级既有 RenderPlan、parameterized sampler 或 limits version，也没有新增第二套 resolver、receipt 或公开 sampler；这些已审核选择在 Stage 14D-2 继续冻结。Stage 14D-2 不顺带修改已关闭的双曲线路径或其审核观察。
+
+Stage 14D-2 固定抛物线只有一个数学分支 `branch_id=0`，最多两个互不连接的 `OPEN` 参数区间。令顶点为 `(h,k)`、有符号焦参数为 `p`：
+
+```text
+竖轴（上/下）：x=h+2pt, y=k+pt²
+横轴（左/右）：x=h+pt², y=k+2pt
+```
+
+`p` 的符号自然确定开口，不建立四套算法。Builder 把 viewport 分成 cross 轴与 opening 轴，exact 计算 `cross_interval=(cross_edge-cross_vertex)/(2p)` 和 `q_interval=(axis_edge-axis_vertex)/p`，再将 `t²` 限制于 `q_interval∩[0,+∞)`。可见性、空集、孤立切点、单双区间以及有理端点与 `±sqrt(q)` 的顺序全部在任何 float/sqrt 转换前用 Fraction、符号和平方比较决定；转换后只允许在 `parameter_merge_ulps` 内向区间内部修正，并逐端点评估 viewport 容差。float64 坍缩使用 `NUMERIC_RANGE_UNSUPPORTED`，exact 不可见或孤立切点使用 `NO_VISIBLE_CURVE`。
+
+`parabolic-sampling-policy-v1` 固定每像素 1 点、开放段至少 2 点、preferred batch 4096、parameter merge 与 viewport boundary 各 8 ULP、target/maximum residual 32/256 ULP、取消间隔 256。每段在最大绝对端点参数处计算 `dx/dt,dy/dt` 的像素速度上界，点数为 `max(2, ceil(max_pixel_speed*(stop-start))+1)`。抛物线预算固定 segment capacity 2、parameter-root capacity 6、interval capacity 2；parameter batch 只有 `B*8`，`t²` 直接写入最终坐标 slice，transcendental workspace 为 0。exact workspace 以命名的 interval/residual 同时存活整数和既有 axis-aligned-conic 位宽证明计入，不使用经验倍率。
+
+sampler 在首个输出数组分配前重投影 geometry、逐字段重算预算并复验 receipt/limits，只消费已批准 interval。每个区间使用绝对样本索引的 `j/(N-1)` 并显式固定两端点；逐点以 primitive equation 和 `Fraction.from_float` 计算 normalized residual。超过 256 ULP typed 拒绝，32–256 ULP 成功并报告 `SAMPLING_PRECISION_LIMITED`；曲线无界，因此所有成功结果报告一次 `VIEWPORT_CLIPPED`，计数为实际成功 segment 数。x/y/ranges 自有只读，取消不保留部分结果。
+
+Stage 14D-2 没有升级 RenderPlan、parameterized sampler 或 limits version，也没有新增第二套 resolver、receipt 或公开 sampler。Stage 14E、几何 renderer、`SceneRenderExecutor`、Actor、Controller、UI、contour 后备链路与多 item 仍未接入。P0-06 保持打开；这只表示 14D-2 完成，不表示 Stage 14、Stage 15 或 M1.5 完成，也未进入 Stage 15。
 
 ## 8. RenderActor 并发模型
 

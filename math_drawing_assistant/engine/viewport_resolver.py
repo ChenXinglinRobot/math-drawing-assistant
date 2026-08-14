@@ -19,9 +19,11 @@ from math_drawing_assistant.engine.parameterized_budget import (
     estimate_hyperbola_exact_workspace_bytes,
     estimate_line_exact_workspace_bytes,
     estimate_oval_exact_workspace_bytes,
+    estimate_parabola_exact_workspace_bytes,
 )
 from math_drawing_assistant.engine.hyperbola_geometry import project_hyperbola_geometry
 from math_drawing_assistant.engine.oval_geometry import project_oval_geometry
+from math_drawing_assistant.engine.parabola_geometry import project_parabola_geometry
 from math_drawing_assistant.models.errors import (
     ErrorCode,
     ErrorInfo,
@@ -110,6 +112,8 @@ def resolve_single_item_viewport(
         return _resolve_auto_oval(spec, request, aspect=aspect, limits=limits)
     if type(spec) is HyperbolaSpec:
         return _resolve_auto_hyperbola(spec, request, aspect=aspect, limits=limits)
+    if type(spec) is ParabolaSpec:
+        return _resolve_auto_parabola(spec, request, aspect=aspect, limits=limits)
     return _failure(
         _contract_error(
             "viewport_strategy",
@@ -727,6 +731,94 @@ def _resolve_auto_hyperbola(
     return ViewportResolution(viewport=resolved_or_error)
 
 
+def _resolve_auto_parabola(
+    spec: ParabolaSpec,
+    request: ViewportRequest,
+    *,
+    aspect: ResolvedAspect,
+    limits: ApplicationLimits,
+) -> ViewportResolution:
+    """Resolve the exact t in [-1, 1] teaching window for one ParabolaSpec."""
+
+    for name in ("x_min", "x_max", "y_min", "y_max"):
+        if getattr(request, name) is not None:
+            return _failure(
+                _invalid_viewport(
+                    name,
+                    "automatic parabola viewports derive all four bounds",
+                ),
+            )
+    try:
+        exact_workspace_bytes = estimate_parabola_exact_workspace_bytes(limits)
+    except MemoryError:
+        return _failure(
+            _parabola_probe_budget_error(spec.item_id, "workspace estimate failed"),
+        )
+    except (AttributeError, TypeError, ValueError):
+        return _failure(
+            _contract_error(
+                "viewport_limits",
+                "parabola exact-workspace contract mismatch",
+                item_id=spec.item_id,
+            ),
+        )
+    if exact_workspace_bytes > limits.max_viewport_probe_bytes:
+        return _failure(
+            _parabola_probe_budget_error(
+                spec.item_id,
+                "parabola exact workspace exceeds max_viewport_probe_bytes",
+            ),
+        )
+
+    try:
+        geometry = project_parabola_geometry(spec)
+        x_bounds = _fit_auto_geometry_axis(
+            geometry.auto_x_lower,
+            geometry.auto_x_upper,
+            limits=limits,
+        )
+        y_bounds = _fit_auto_geometry_axis(
+            geometry.auto_y_lower,
+            geometry.auto_y_upper,
+            limits=limits,
+        )
+    except MemoryError:
+        return _failure(
+            _parabola_probe_budget_error(spec.item_id, "exact parabola workspace failed"),
+        )
+    except (AttributeError, OverflowError, TypeError, ValueError):
+        return _failure(
+            _parabola_numeric_range_error(
+                spec.item_id,
+                "exact parabola teaching window cannot be represented as finite float64",
+            ),
+        )
+    if x_bounds is None or y_bounds is None:
+        return _failure(
+            _parabola_numeric_range_error(
+                spec.item_id,
+                "complete parabola teaching window cannot fit viewport limits",
+            ),
+        )
+    resolved_or_error = _resolved_viewport(
+        x_bounds[0],
+        x_bounds[1],
+        y_bounds[0],
+        y_bounds[1],
+        aspect,
+        ViewportSource.AUTO_GEOMETRY,
+        limits=limits,
+    )
+    if isinstance(resolved_or_error, ErrorInfo):
+        return _failure(
+            _parabola_numeric_range_error(
+                spec.item_id,
+                "derived parabola viewport is outside the configured finite range",
+            ),
+        )
+    return ViewportResolution(viewport=resolved_or_error)
+
+
 def _bounded_exact_centered_range(
     center: Fraction,
     span: Fraction,
@@ -1124,6 +1216,28 @@ def _hyperbola_numeric_range_error(item_id: str, technical_message: str) -> Erro
         technical_message=technical_message,
         item_id=item_id,
         field_name="viewport_numeric_range",
+        recoverable=True,
+    )
+
+
+def _parabola_probe_budget_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.VIEWPORT_PROBE_BUDGET_EXCEEDED,
+        user_message="Automatic parabola viewport calculation exceeds the configured budget.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="max_viewport_probe_bytes",
+        recoverable=True,
+    )
+
+
+def _parabola_numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
+        user_message="The parabola is outside the currently supported numeric range.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="parabola_numeric_range",
         recoverable=True,
     )
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, localcontext
 from fractions import Fraction
 from math import acosh, acos, asin, asinh, ceil, cosh, hypot, isfinite, nextafter, pi, sinh, tau, ulp
 
@@ -16,8 +18,10 @@ from math_drawing_assistant.engine.parameterized_budget import (
     build_hyperbola_parameterized_memory_budget,
     build_line_parameterized_memory_budget,
     build_oval_parameterized_memory_budget,
+    build_parabola_parameterized_memory_budget,
     plan_hyperbola_batch_size,
     plan_oval_batch_size,
+    plan_parabola_batch_size,
 )
 from math_drawing_assistant.engine.hyperbola_geometry import (
     HyperbolaExecutionGeometry,
@@ -28,6 +32,11 @@ from math_drawing_assistant.engine.oval_geometry import (
     OvalExecutionGeometry,
     oval_parameter_point,
     project_oval_geometry,
+)
+from math_drawing_assistant.engine.parabola_geometry import (
+    ParabolaExecutionGeometry,
+    parabola_parameter_point,
+    project_parabola_geometry,
 )
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo
 from math_drawing_assistant.models.plot_specs import (
@@ -47,6 +56,7 @@ from math_drawing_assistant.models.render_plan import (
     DEFAULT_EXPLICIT_SAMPLING_POLICY,
     DEFAULT_HYPERBOLIC_SAMPLING_POLICY,
     DEFAULT_LINE_SAMPLING_POLICY,
+    DEFAULT_PARABOLIC_SAMPLING_POLICY,
     PARAMETERIZED_SAMPLER_CONTRACT_VERSION,
     RENDER_PLAN_CONTRACT_VERSION,
     ExplicitRenderItemPlan,
@@ -55,6 +65,7 @@ from math_drawing_assistant.models.render_plan import (
     HyperbolicSamplingPolicy,
     LineSamplingPolicy,
     LineSegmentPlan,
+    ParabolicSamplingPolicy,
     ParameterIntervalPlan,
     ParameterizedRenderMemoryBudget,
     RenderMemoryBudget,
@@ -79,6 +90,16 @@ _GEOMETRY_SPEC_TYPES = (
 )
 _SINGLE_ITEM_SPEC_TYPES = (ExplicitFunctionSpec, *_GEOMETRY_SPEC_TYPES)
 _FLOAT64_EPSILON = Fraction(1, 1 << 52)
+_MAX_FLOAT64 = sys.float_info.max
+
+
+@dataclass(frozen=True, slots=True)
+class _ExactParabolaParameterBound:
+    """A rational parameter or one signed exact square root."""
+
+    rational: Fraction | None
+    root_squared: Fraction | None
+    root_sign: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +112,9 @@ class RenderPlanBuilder:
     angular_sampling_policy: AngularSamplingPolicy = DEFAULT_ANGULAR_SAMPLING_POLICY
     hyperbolic_sampling_policy: HyperbolicSamplingPolicy = (
         DEFAULT_HYPERBOLIC_SAMPLING_POLICY
+    )
+    parabolic_sampling_policy: ParabolicSamplingPolicy = (
+        DEFAULT_PARABOLIC_SAMPLING_POLICY
     )
 
     def build(
@@ -185,6 +209,24 @@ class RenderPlanBuilder:
                 show_legend=show_legend,
                 limits=limits,
                 policy=hyperbolic_policy_or_error,
+            )
+        if type(spec) is ParabolaSpec:
+            parabolic_policy_or_error = _validated_parabolic_policy(
+                self.parabolic_sampling_policy,
+            )
+            if isinstance(parabolic_policy_or_error, ErrorInfo):
+                return parabolic_policy_or_error
+            return _build_parabola_plan(
+                scene_spec,
+                spec,
+                resolved_viewport,
+                image_width=image_width,
+                image_height=image_height,
+                dpi=dpi,
+                show_grid=show_grid,
+                show_legend=show_legend,
+                limits=limits,
+                policy=parabolic_policy_or_error,
             )
         if type(spec) is not ExplicitFunctionSpec:
             return _internal_error(
@@ -385,6 +427,29 @@ def _validated_hyperbolic_policy(
         return _internal_error(
             "hyperbolic_sampling_policy",
             "hyperbolic sampling policy version is not active",
+        )
+    return policy
+
+
+def _validated_parabolic_policy(
+    policy: object,
+) -> ParabolicSamplingPolicy | ErrorInfo:
+    if type(policy) is not ParabolicSamplingPolicy:
+        return _internal_error(
+            "parabolic_sampling_policy",
+            "builder requires an exact ParabolicSamplingPolicy",
+        )
+    try:
+        policy.__post_init__()
+    except (AttributeError, TypeError, ValueError):
+        return _internal_error(
+            "parabolic_sampling_policy",
+            "parabolic sampling policy contract mismatch",
+        )
+    if policy != DEFAULT_PARABOLIC_SAMPLING_POLICY:
+        return _internal_error(
+            "parabolic_sampling_policy",
+            "parabolic sampling policy version is not active",
         )
     return policy
 
@@ -1537,6 +1602,551 @@ def _sampled_hyperbola_intervals(
     return tuple(intervals)
 
 
+def _build_parabola_plan(
+    scene_spec: PlotSceneSpec,
+    spec: ParabolaSpec,
+    resolved_viewport: ResolvedViewport,
+    *,
+    image_width: int,
+    image_height: int,
+    dpi: int,
+    show_grid: bool,
+    show_legend: bool,
+    limits: ApplicationLimits,
+    policy: ParabolicSamplingPolicy,
+) -> RenderPlan | ErrorInfo:
+    """Approve visible parameter intervals and the complete parabola budget."""
+
+    try:
+        geometry = project_parabola_geometry(spec)
+        bounds_or_error = _plan_visible_parabola_intervals(
+            geometry,
+            resolved_viewport,
+            policy=policy,
+        )
+    except MemoryError:
+        return _resource_error(
+            "max_estimated_memory_bytes",
+            "parabola interval-planning workspace allocation failed",
+            item_id=spec.item_id,
+        )
+    except (AttributeError, OverflowError, TypeError, ValueError, ZeroDivisionError):
+        return _numeric_range_error_for_parabola(
+            spec.item_id,
+            "parabola geometry cannot be represented for interval planning",
+        )
+    if isinstance(bounds_or_error, ErrorInfo):
+        return bounds_or_error
+
+    intervals_or_error = _sampled_parabola_intervals(
+        geometry,
+        resolved_viewport,
+        bounds_or_error,
+        image_width=image_width,
+        image_height=image_height,
+        limits=limits,
+        policy=policy,
+    )
+    if isinstance(intervals_or_error, ErrorInfo):
+        return intervals_or_error
+    intervals = intervals_or_error
+    total_samples = sum(interval.sample_count for interval in intervals)
+    try:
+        batch_size = plan_parabola_batch_size(
+            sample_count=total_samples,
+            preferred_batch_points=policy.preferred_batch_points,
+            image_width=image_width,
+            image_height=image_height,
+            limits=limits,
+        )
+        memory_budget = build_parabola_parameterized_memory_budget(
+            sample_count=total_samples,
+            batch_size=batch_size,
+            image_width=image_width,
+            image_height=image_height,
+            limits=limits,
+        )
+        try:
+            limits.validate_scene_resources(
+                item_count=1,
+                sample_points_per_item=total_samples,
+                total_sample_points=total_samples,
+                branches_per_item=2,
+                total_branches=2,
+                estimated_memory_bytes=memory_budget.total_bytes,
+            )
+        except (TypeError, ValueError):
+            return _resource_error(
+                "parabola_plan_resources",
+                "parabola sampling plan exceeds active scene resource limits",
+                item_id=spec.item_id,
+            )
+        item_plan = GeometryRenderItemPlan(
+            item_id=spec.item_id,
+            mathematical_branch_count=1,
+            segments=intervals,
+            sample_count=total_samples,
+            batch_size=batch_size,
+            max_segment_count=2,
+        )
+        plan = RenderPlan(
+            scene_spec=scene_spec,
+            resolved_viewport=resolved_viewport,
+            image_width=image_width,
+            image_height=image_height,
+            dpi=dpi,
+            plan_version=RENDER_PLAN_CONTRACT_VERSION,
+            limits_version=limits.version,
+            show_grid=show_grid,
+            show_legend=show_legend,
+            sampling_policy_version=policy.version,
+            numeric_executor_contract_version=None,
+            parameterized_sampler_contract_version=(
+                PARAMETERIZED_SAMPLER_CONTRACT_VERSION
+            ),
+            item_plan=item_plan,
+            memory_budget=memory_budget,
+        )
+        return _approve_render_plan(plan)
+    except MemoryError:
+        return _resource_error(
+            "max_estimated_memory_bytes",
+            "parabola plan or approval allocation failed",
+            item_id=spec.item_id,
+        )
+    except ValueError as exc:
+        if "budget cannot fit" in str(exc) or "resource" in str(exc):
+            return _resource_error(
+                "parabola_plan_resources",
+                "parabola sampling plan exceeds active scene resource limits",
+                item_id=spec.item_id,
+            )
+        return _internal_error(
+            "render_plan",
+            "approved parabola render-plan contract construction failed",
+            item_id=spec.item_id,
+        )
+    except (AttributeError, TypeError):
+        return _internal_error(
+            "render_plan",
+            "approved parabola render-plan contract construction failed",
+            item_id=spec.item_id,
+        )
+
+
+def _plan_visible_parabola_intervals(
+    geometry: ParabolaExecutionGeometry,
+    viewport: ResolvedViewport,
+    *,
+    policy: ParabolicSamplingPolicy,
+) -> tuple[tuple[float, float], ...] | ErrorInfo:
+    """Decide exact visibility/topology before converting any square root."""
+
+    left = Fraction.from_float(viewport.x_min)
+    right = Fraction.from_float(viewport.x_max)
+    bottom = Fraction.from_float(viewport.y_min)
+    top = Fraction.from_float(viewport.y_max)
+    if geometry.has_vertical_axis:
+        cross_lower, cross_upper = left, right
+        cross_vertex = geometry.vertex_x
+        axis_lower, axis_upper = bottom, top
+        axis_vertex = geometry.vertex_y
+    else:
+        cross_lower, cross_upper = bottom, top
+        cross_vertex = geometry.vertex_y
+        axis_lower, axis_upper = left, right
+        axis_vertex = geometry.vertex_x
+
+    twice_parameter = 2 * geometry.focal_parameter
+    cross_interval = tuple(
+        sorted(
+            (
+                (cross_lower - cross_vertex) / twice_parameter,
+                (cross_upper - cross_vertex) / twice_parameter,
+            ),
+        ),
+    )
+    q_interval = tuple(
+        sorted(
+            (
+                (axis_lower - axis_vertex) / geometry.focal_parameter,
+                (axis_upper - axis_vertex) / geometry.focal_parameter,
+            ),
+        ),
+    )
+    q_lower, q_upper = q_interval
+    if q_upper <= 0:
+        # q_upper == 0 is at most an isolated vertex, never a drawable interval.
+        return _no_visible_parabola_error(
+            geometry.spec.item_id,
+            "exact parabola opening-axis intersection is empty or a singleton",
+        )
+    constrained_q_lower = max(Fraction(0), q_lower)
+    if constrained_q_lower == 0:
+        candidates = (
+            (
+                _parabola_root_bound(-1, q_upper),
+                _parabola_root_bound(1, q_upper),
+            ),
+        )
+    else:
+        candidates = (
+            (
+                _parabola_root_bound(-1, q_upper),
+                _parabola_root_bound(-1, constrained_q_lower),
+            ),
+            (
+                _parabola_root_bound(1, constrained_q_lower),
+                _parabola_root_bound(1, q_upper),
+            ),
+        )
+
+    cross_start = _parabola_rational_bound(cross_interval[0])
+    cross_stop = _parabola_rational_bound(cross_interval[1])
+    exact_intersections: list[
+        tuple[_ExactParabolaParameterBound, _ExactParabolaParameterBound]
+    ] = []
+    for candidate_start, candidate_stop in candidates:
+        start = (
+            candidate_start
+            if _compare_parabola_bounds(candidate_start, cross_start) >= 0
+            else cross_start
+        )
+        stop = (
+            candidate_stop
+            if _compare_parabola_bounds(candidate_stop, cross_stop) <= 0
+            else cross_stop
+        )
+        if _compare_parabola_bounds(start, stop) < 0:
+            exact_intersections.append((start, stop))
+
+    # Empty and exact singleton intersections return before any Decimal/float sqrt.
+    if not exact_intersections:
+        return _no_visible_parabola_error(
+            geometry.spec.item_id,
+            "parabola has no non-zero exact parameter interval in the viewport",
+        )
+
+    visible: list[tuple[float, float]] = []
+    for exact_start, exact_stop in exact_intersections:
+        start = _parabola_bound_to_float(exact_start)
+        stop = _parabola_bound_to_float(exact_stop)
+        if start >= stop:
+            return _numeric_range_error_for_parabola(
+                geometry.spec.item_id,
+                "visible parabola interval collapses during float64 conversion",
+            )
+        corrected = _correct_parabola_interval_inward(
+            geometry,
+            viewport,
+            start,
+            stop,
+            policy=policy,
+        )
+        if corrected is None:
+            return _numeric_range_error_for_parabola(
+                geometry.spec.item_id,
+                "parabola parameter roots cannot be corrected inside the viewport",
+            )
+        start, stop = corrected
+        first = parabola_parameter_point(geometry, start)
+        last = parabola_parameter_point(geometry, stop)
+        if first == last:
+            return _numeric_range_error_for_parabola(
+                geometry.spec.item_id,
+                "visible parabola interval collapses to one float64 point",
+            )
+        visible.append((start, stop))
+
+    visible.sort(key=lambda value: value[0])
+    if len(visible) > 2:
+        return _numeric_range_error_for_parabola(
+            geometry.spec.item_id,
+            "parabola visibility produced more than two intervals",
+        )
+    return tuple(visible)
+
+
+def _parabola_rational_bound(value: Fraction) -> _ExactParabolaParameterBound:
+    return _ExactParabolaParameterBound(
+        rational=value,
+        root_squared=None,
+        root_sign=0,
+    )
+
+
+def _parabola_root_bound(
+    sign: int,
+    squared: Fraction,
+) -> _ExactParabolaParameterBound:
+    if sign not in {-1, 1} or type(squared) is not Fraction or squared <= 0:
+        raise ValueError("parabola square-root bound is invalid.")
+    return _ExactParabolaParameterBound(
+        rational=None,
+        root_squared=squared,
+        root_sign=sign,
+    )
+
+
+def _compare_parabola_bounds(
+    left: _ExactParabolaParameterBound,
+    right: _ExactParabolaParameterBound,
+) -> int:
+    """Compare rational and signed-sqrt bounds using signs and exact squares."""
+
+    if left.rational is not None and right.rational is not None:
+        return (left.rational > right.rational) - (left.rational < right.rational)
+    if left.rational is not None:
+        return _compare_rational_to_parabola_root(left.rational, right)
+    if right.rational is not None:
+        return -_compare_rational_to_parabola_root(right.rational, left)
+    assert left.root_squared is not None and right.root_squared is not None
+    if left.root_sign != right.root_sign:
+        return (left.root_sign > right.root_sign) - (left.root_sign < right.root_sign)
+    squared_comparison = (left.root_squared > right.root_squared) - (
+        left.root_squared < right.root_squared
+    )
+    return squared_comparison if left.root_sign > 0 else -squared_comparison
+
+
+def _compare_rational_to_parabola_root(
+    rational: Fraction,
+    root: _ExactParabolaParameterBound,
+) -> int:
+    assert root.root_squared is not None and root.root_sign in {-1, 1}
+    if root.root_sign > 0:
+        if rational < 0:
+            return -1
+        squared_comparison = (rational * rational > root.root_squared) - (
+            rational * rational < root.root_squared
+        )
+        return squared_comparison
+    if rational > 0:
+        return 1
+    squared_comparison = (rational * rational > root.root_squared) - (
+        rational * rational < root.root_squared
+    )
+    return -squared_comparison
+
+
+def _parabola_bound_to_float(bound: _ExactParabolaParameterBound) -> float:
+    if bound.rational is not None:
+        try:
+            value = float(bound.rational)
+        except OverflowError as exc:
+            raise OverflowError("parabola rational parameter is not finite.") from exc
+    else:
+        assert bound.root_squared is not None
+        value = bound.root_sign * _finite_parabola_sqrt(bound.root_squared)
+    if not isfinite(value):
+        raise OverflowError("parabola parameter is not finite.")
+    return value
+
+
+def _finite_parabola_sqrt(value: Fraction) -> float:
+    if type(value) is not Fraction or value <= 0:
+        raise ValueError("parabola parameter square must be a positive Fraction.")
+    try:
+        with localcontext() as context:
+            context.prec = 80
+            decimal_value = Decimal(value.numerator) / Decimal(value.denominator)
+            result = float(decimal_value.sqrt())
+    except (InvalidOperation, OverflowError, ValueError) as exc:
+        raise OverflowError("parabola square root is not representable.") from exc
+    if not isfinite(result) or result <= 0.0:
+        raise OverflowError("parabola square root is not finite and positive.")
+    return result
+
+
+def _correct_parabola_interval_inward(
+    geometry: ParabolaExecutionGeometry,
+    viewport: ResolvedViewport,
+    start: float,
+    stop: float,
+    *,
+    policy: ParabolicSamplingPolicy,
+) -> tuple[float, float] | None:
+    corrected_start = start
+    corrected_stop = stop
+    for _ in range(policy.parameter_merge_ulps + 1):
+        x_value, y_value = parabola_parameter_point(geometry, corrected_start)
+        if _inside_closed_viewport(
+            x_value,
+            y_value,
+            viewport,
+            ulps=0,
+        ):
+            break
+        corrected_start = nextafter(corrected_start, stop)
+    else:
+        return None
+    for _ in range(policy.parameter_merge_ulps + 1):
+        x_value, y_value = parabola_parameter_point(geometry, corrected_stop)
+        if _inside_closed_viewport(
+            x_value,
+            y_value,
+            viewport,
+            ulps=0,
+        ):
+            break
+        corrected_stop = nextafter(corrected_stop, corrected_start)
+    else:
+        return None
+    if corrected_start >= corrected_stop:
+        return None
+    for parameter in (corrected_start, corrected_stop):
+        x_value, y_value = parabola_parameter_point(geometry, parameter)
+        if not _inside_closed_viewport(
+            x_value,
+            y_value,
+            viewport,
+            ulps=policy.viewport_boundary_ulps,
+        ):
+            return None
+    return (corrected_start, corrected_stop)
+
+
+def _sampled_parabola_intervals(
+    geometry: ParabolaExecutionGeometry,
+    viewport: ResolvedViewport,
+    bounds: tuple[tuple[float, float], ...],
+    *,
+    image_width: int,
+    image_height: int,
+    limits: ApplicationLimits,
+    policy: ParabolicSamplingPolicy,
+) -> tuple[ParameterIntervalPlan, ...] | ErrorInfo:
+    x_span = viewport.x_max - viewport.x_min
+    y_span = viewport.y_max - viewport.y_min
+    intervals: list[ParameterIntervalPlan] = []
+    total_samples = 0
+    for start, stop in bounds:
+        maximum_parameter = max(abs(start), abs(stop))
+        try:
+            constant_speed = abs(geometry.two_focal_parameter_float)
+            variable_speed = _finite_parabola_product(
+                constant_speed,
+                maximum_parameter,
+                "parabola variable derivative",
+            )
+            if geometry.has_vertical_axis:
+                x_speed = _finite_parabola_pixel_speed(
+                    constant_speed,
+                    image_width,
+                    x_span,
+                )
+                y_speed = _finite_parabola_pixel_speed(
+                    variable_speed,
+                    image_height,
+                    y_span,
+                )
+            else:
+                x_speed = _finite_parabola_pixel_speed(
+                    variable_speed,
+                    image_width,
+                    x_span,
+                )
+                y_speed = _finite_parabola_pixel_speed(
+                    constant_speed,
+                    image_height,
+                    y_span,
+                )
+            maximum_pixel_speed = hypot(x_speed, y_speed)
+            parameter_span = stop - start
+            planned = _finite_parabola_product(
+                float(policy.samples_per_pixel),
+                maximum_pixel_speed,
+                "parabola policy derivative",
+            )
+            planned = _finite_parabola_product(
+                planned,
+                parameter_span,
+                "parabola sample-count span",
+            )
+        except (OverflowError, ZeroDivisionError):
+            return _numeric_range_error_for_parabola(
+                geometry.spec.item_id,
+                "parabola sample-count derivative bound overflowed",
+            )
+        if (
+            not isfinite(maximum_pixel_speed)
+            or maximum_pixel_speed < 0.0
+            or not isfinite(planned)
+            or planned < 0.0
+        ):
+            return _numeric_range_error_for_parabola(
+                geometry.spec.item_id,
+                "parabola sample-count calculation is not finite",
+            )
+        try:
+            sample_count = max(
+                policy.minimum_open_segment_samples,
+                ceil(planned) + 1,
+            )
+        except (OverflowError, ValueError):
+            return _numeric_range_error_for_parabola(
+                geometry.spec.item_id,
+                "parabola sample count cannot be safely rounded",
+            )
+        total_samples += sample_count
+        if (
+            total_samples > limits.max_sample_points_per_item
+            or total_samples > limits.max_total_sample_points
+        ):
+            return _resource_error(
+                "parabola_sample_count",
+                "parabola sample count exceeds active point limits",
+                item_id=geometry.spec.item_id,
+            )
+        try:
+            intervals.append(
+                ParameterIntervalPlan(
+                    mathematical_branch_id=0,
+                    parameter_start=start,
+                    parameter_stop=stop,
+                    sample_count=sample_count,
+                    closure=SegmentClosure.OPEN,
+                ),
+            )
+        except (TypeError, ValueError):
+            return _numeric_range_error_for_parabola(
+                geometry.spec.item_id,
+                "parabola parameter interval construction failed",
+            )
+    return tuple(intervals)
+
+
+def _finite_parabola_product(left: float, right: float, name: str) -> float:
+    if not isfinite(left) or not isfinite(right):
+        raise OverflowError(f"{name} inputs must be finite.")
+    if left != 0.0 and right != 0.0 and abs(left) > _MAX_FLOAT64 / abs(right):
+        raise OverflowError(f"{name} would overflow.")
+    result = left * right
+    if not isfinite(result):
+        raise OverflowError(f"{name} is not finite.")
+    return result
+
+
+def _finite_parabola_pixel_speed(
+    coordinate_speed: float,
+    pixels: int,
+    viewport_span: float,
+) -> float:
+    scaled = _finite_parabola_product(
+        coordinate_speed,
+        float(pixels),
+        "parabola pixel derivative",
+    )
+    if not isfinite(viewport_span) or viewport_span <= 0.0:
+        raise ZeroDivisionError("parabola viewport span is invalid.")
+    if viewport_span < 1.0 and scaled > _MAX_FLOAT64 * viewport_span:
+        raise OverflowError("parabola pixel derivative would overflow division.")
+    result = scaled / viewport_span
+    if not isfinite(result):
+        raise OverflowError("parabola pixel derivative is not finite.")
+    return result
+
+
 def _line_segment_for_viewport(
     spec: LineSpec,
     viewport: ResolvedViewport,
@@ -1712,6 +2322,17 @@ def _no_visible_hyperbola_error(item_id: str, technical_message: str) -> ErrorIn
     )
 
 
+def _no_visible_parabola_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NO_VISIBLE_CURVE,
+        user_message="The parabola has no drawable segment in the current viewport.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="parabola_visibility",
+        recoverable=True,
+    )
+
+
 def _numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
     return ErrorInfo(
         code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
@@ -1744,6 +2365,20 @@ def _numeric_range_error_for_hyperbola(
         technical_message=technical_message,
         item_id=item_id,
         field_name="hyperbola_numeric_range",
+        recoverable=True,
+    )
+
+
+def _numeric_range_error_for_parabola(
+    item_id: str,
+    technical_message: str,
+) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
+        user_message="The parabola exceeds the supported numeric precision.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="parabola_numeric_range",
         recoverable=True,
     )
 
