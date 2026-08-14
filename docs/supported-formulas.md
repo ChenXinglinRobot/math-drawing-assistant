@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
-文档版本：stage-14b2-exact-line-sampling-v1
-状态：阶段 13A 至 13E 已完成；Stage 14B-2 已实现 exact 一般直线，Stage 14C 已在同一单项 viewport/Builder/receipt 边界内实现圆与椭圆的正式参数化原型。双曲线、抛物线、geometry renderer 与应用整合仍未实现；P0-06、Stage 14/15 和核心 MVP 均未完成。
+文档版本：stage-14d1-hyperbola-sampling-v1
+状态：阶段 13A 至 13E 已完成；Stage 14B-2 已实现 exact 一般直线，Stage 14C 已实现圆与椭圆，Stage 14D-1 已在同一单项 viewport/Builder/receipt/sampler 边界实现双曲线两支、有限可见参数区间与安全参数化采样。抛物线、Stage 14E、geometry renderer 与应用整合仍未实现；P0-06、Stage 14/15 和核心 MVP 均未完成。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
@@ -768,7 +768,7 @@ NumericExecutionCost.max_live_float64_vectors
 
 变量零次幂不新增 `variable_zero_exponent`，exact arithmetic 资源超限不新增 `equation_normalization_limit_exceeded`，仍分别使用 `unsupported_equation` 与 `resource_limit_exceeded`。当多个非法结构重叠时，bounded polynomial traversal 按既有子节点访问顺序立即传播错误；这只决定先报告哪个错误，不改变输入被拒绝的事实。阶段 13E 不修改该 traversal。
 
-## Stage 14B/14C 公共契约与正式参数化原型
+## Stage 14B/14C/14D-1 公共契约与正式参数化原型
 
 ### aspect、viewport 与统一 resolver
 
@@ -787,7 +787,9 @@ DEFAULT 映射表：
 
 用户显式 `AspectRequest.AUTO/EQUAL` 覆盖上表。`resolve_single_item_viewport` 是唯一单项 resolver；既有 `resolve_single_explicit_viewport` 保留签名并委托它。manual 模式为六种 exact Spec 校验四边界和 aspect，source 为 `MANUAL`。显函数 auto 完全保持既有 probe/typed warning/fallback 行为。exact `LineSpec` auto 不运行 probe 或 fallback：令直线为 `d*x + e*y + f = 0`，先在 workspace 门禁后 exact 计算最近原点锚点 `(-d*f/(d²+e²), -e*f/(d²+e²))`；未给 x 时用既有默认 x/y 固定跨度围绕锚点并在绝对坐标边界平移、不缩小，给出完整 x 时保持 x 原值并从两端 exact 求 y，再应用现有 absolute/relative padding 与最小跨度；竖直线使用锚点 y 的既有 fallback 固定跨度。成功 source 为 `AUTO_GEOMETRY`。partial x 和任何 explicit y 都返回 `invalid_viewport`；不可表示或越界返回 `numeric_range_unsupported`。
 
-exact `CircleSpec | EllipseSpec` auto 先用有界 exact workspace 投影 center 与半轴平方，以 exact 比较和 `nextafter` 得到不会内缩的 float64 包围盒，再应用集中 absolute/relative padding、最小/最大跨度和绝对坐标限制；临近坐标上限时只平移、不缩小。成功 source 同为 `AUTO_GEOMETRY`，任一显式 bound 返回 `invalid_viewport`，不可完整包含时返回 `numeric_range_unsupported`，且不调用显函数 probe/executor/fallback。双曲线和抛物线 auto 仍返回 `internal_error`、`field_name="viewport_strategy"`、`recoverable=False`。未知 exact Spec 返回 `invalid_request`。
+exact `CircleSpec | EllipseSpec` auto 先用有界 exact workspace 投影 center 与半轴平方，以 exact 比较和 `nextafter` 得到不会内缩的 float64 包围盒，再应用集中 absolute/relative padding、最小/最大跨度和绝对坐标限制；临近坐标上限时只平移、不缩小。成功 source 同为 `AUTO_GEOMETRY`，任一显式 bound 返回 `invalid_viewport`，不可完整包含时返回 `numeric_range_unsupported`，且不调用显函数 probe/executor/fallback。
+
+exact `HyperbolaSpec` auto 在投影前先用 `estimate_hyperbola_exact_workspace_bytes` 通过 `max_viewport_probe_bytes` 门禁。令 `a²=semi_transverse_squared`、`b²=semi_conjugate_squared`，有限教学窗口固定为：水平横轴 `x∈[h-sqrt(2*a²), h+sqrt(2*a²)]、y∈[k-sqrt(b²), k+sqrt(b²)]`；垂直横轴交换坐标角色。边界用 exact square enclosure 和 `nextafter` outward 转换，随后复用 `_fit_auto_geometry_axis` 的同一套 absolute/relative padding、min/max span、absolute coordinate 规则，不内缩教学窗口。成功 source 为 `AUTO_GEOMETRY`；任一 explicit x/y bound 返回 `invalid_viewport`；workspace 超限返回 `viewport_probe_budget_exceeded`；不能有限表示或完整容纳返回 `numeric_range_unsupported`。它不调用显函数 probe、numeric executor 或 fallback。抛物线 auto 仍返回 `internal_error`、`field_name="viewport_strategy"`、`recoverable=False`。未知 exact Spec 返回 `invalid_request`。
 
 ### line sampling policy
 
@@ -821,6 +823,37 @@ exact `CircleSpec | EllipseSpec` auto 先用有界 exact workspace 投影 center
 | `cancellation_check_interval` | 256 |
 
 圆/椭圆共用 `x=h+a*cos(theta), y=k+b*sin(theta)`。Builder 对矩形四边以 exact `delta²` 与 exact 半轴平方判断 0/1/2 个边界根，将根规范化、按 `ulp(2*pi)` 尺度去重，再对循环相邻开区间做中点 sweep。完整可见时只批准 `[0,2*pi] + CLOSED`，采样时用 `j/N` 且不重复首点；部分弧均为 `OPEN` 并包含批准的两个端点，跨 seam 的首尾弧合成 `stop>2*pi` 的单个展开区间。所有弧按 start 稳定排序、branch 固定为 0、容量固定为 4，不相邻弧始终由独立 range/metadata 隔离。
+
+### hyperbola sampling policy、分支与有限可见区间
+
+`HyperbolaSpec` 唯一激活的 frozen scalar policy 为 `hyperbolic-sampling-policy-v1`：
+
+| 字段 | 精确值 |
+|---|---:|
+| `samples_per_pixel` | 1 |
+| `minimum_open_segment_samples` | 2 |
+| `preferred_batch_points` | 4096 |
+| `parameter_merge_ulps` | 8 |
+| `viewport_boundary_ulps` | 8 |
+| `target_residual_ulps` | 32 |
+| `maximum_residual_ulps` | 256 |
+| `cancellation_check_interval` | 256 |
+
+该 v1 version 不允许替换上述语义。令 `s=-1` 对应 branch 0、`s=+1` 对应 branch 1；水平横轴使用 `x=h+s*a*cosh(t), y=k+b*sinh(t)`，垂直横轴使用 `x=h+b*sinh(t), y=k+s*a*cosh(t)`。因此 branch 0 始终是左支/下支，branch 1 始终是右支/上支，不因 viewport 或参数方向交换。
+
+Builder 先把最终 float64 viewport 四边恢复为 exact `Fraction`，并在任何 `asinh/acosh` 转换之前 exact 判断分支可达性、横轴上下界与 `a²` 的关系、孤立切点以及是否必须拆成两个参数区间；共轭方向给出单调 `asinh` 界，横轴方向给出 `acosh` 单区间或跨 `t=0` 的两个区间，再取交集。孤立切点、空交集和 float64 转换后坍缩均不批准。每个数学分支最多两个 `OPEN` 区间、全项最多四个，固定按 `(branch_id, start)` 稳定排序；区间端点虽标为 OPEN，仍是批准并采样的 viewport 边界点。根转换后最多用 `parameter_merge_ulps` 次 `nextafter` 向区间内部修正，且最终端点必须实际位于闭 viewport 内。
+
+每个区间在 `max(abs(start),abs(stop))` 处取单调导数上界。水平横轴的像素速度为 `hypot(a*sinh(t)*width/x_span, b*cosh(t)*height/y_span)`，垂直横轴交换两项；点数为 `max(2, ceil(samples_per_pixel * maximum_pixel_speed * (stop-start)) + 1)`，随后统一通过每项/全局点数、segment 容量、batch 与总内存门禁。不可见返回 `no_visible_curve`，不能有限安全表示返回 `numeric_range_unsupported`，资源不足返回现有 typed resource error；不建立二维网格或 contour 后备路径。
+
+双曲线每个 float64 点以 primitive integer coefficients 和 `Fraction.from_float` 计算：
+
+```text
+R = |A*x^2 + C*y^2 + D*x + E*y + F| /
+    (|A|*max(1,|x^2|) + |C|*max(1,|y^2|)
+     + |D|*max(1,|x|) + |E|*max(1,|y|) + |F|)
+```
+
+`R > 256*epsilon64` 拒绝为 `numeric_range_unsupported`；`32*epsilon64 < R <= 256*epsilon64` 成功但生成 `sampling_precision_limited`；目标阈值以内不生成该 warning。
 
 ### exact 四边求交、排序与残差
 
@@ -873,6 +906,10 @@ receipt 在签发前和消费时交叉校验上述矩阵，并独立快照 exact
 
 圆/椭圆共享另一个 `ParameterizedRenderMemoryBudget` 公式：总点数 `N`、batch `B` 下 final x/y 各 `N*8`，artist `2*N*8`，range 和 metadata 都按批准容量 4 各计 `4*2*8`，parameter batch 为 `B*8`，sin/cos 为 `2*B*8`，validation 覆盖命名的同时存活 exact bigint 清单、9 个候选角、4 个区间、`B` 个 bool 和 `B*8` residual workspace；RGBA 与两份 PNG 储备沿用集中 limits。令 `D=max_equation_canonical_coefficient_digits`、`C=4*D`、`F=1075`：由于 `10 < 2^4`，十进制 canonical coefficient 严格小于 `10^D` 可保守换算为 `C` 个二进制 bits；任一有限 float64 的 `Fraction.from_float` 分子和分母分别不超过 `F` bits。center 为 `-d/(2a)`，axis square 为 `q/(4*a^2*c)` 且 `q=d^2*c+e^2*a-4*a*c*f`；edge-center 差值的平方与 axis square 比较所形成的未约分交叉乘积最多 `5*C+2*F+6` bits。normalized residual 中系数乘 float ratio 平方、五项加法及最终 polynomial/scale 除法最多 `C+6*F+3` bits，与整数倍 `2^-52` 阈值比较再加最多 53 bits。因此共享私有上界取 `max(5*C+2*F+6, C+6*F+56)`，纯整数计算，不使用浮点 `log2` 或安全倍率；按运行时 bigint digit 大小保守估算 40 个同时存活整数。默认 `D=768` 时，旧混合进制公式为 7,372 bits / 40,480 bytes，新上界为 17,516 bits / 94,560 bytes，仍低于 16 MiB exact-workspace 门禁。Builder 从完整固定开销反推最大合法 batch 并审批 total，sampler 在首次数组分配前以批准的 N/B 和当前 limits 逐字段重算、核对并复验 scene resources。
 
+双曲线使用独立、同构但不复用 oval 40 项 liveness 的预算。总点数 `N`、batch `B` 下 final x/y 各 `N*8`，artist `2*N*8`，range 和 metadata 均按容量 4 各计 `4*2*8`，parameter 为 `B*8`，sinh/cosh 为 `2*B*8`；validation 为 exact workspace，加 12 个参数根 `12*8`、12 个 root-valid bool、4 个区间 `4*2*8`、`B` 个 bool 与 `B*8` residual。RGBA 为 `width*height*4`，PNG reserve/copy 各为 `max_png_bytes`。
+
+双曲线 exact workspace 的 49 个同时存活命名整数为：`coefficient_a/c/d/e/f`；`center_x_numerator/denominator`、`center_y_numerator/denominator`；`transverse_square_numerator/denominator`、`conjugate_square_numerator/denominator`；`transverse_lower_numerator/denominator`、`transverse_upper_numerator/denominator`、`conjugate_lower_numerator/denominator`、`conjugate_upper_numerator/denominator`；`transverse_lower_square_numerator/denominator`、`transverse_upper_square_numerator/denominator`；`lower_axis_comparison_left/right`、`upper_axis_comparison_left/right`；`float_x_numerator/denominator`、`float_y_numerator/denominator`；`x_square_numerator/denominator`、`y_square_numerator/denominator`；`term_a_numerator`、`term_c_numerator`、`term_d_numerator`、`term_e_numerator`；`polynomial_numerator/denominator`、`scale_numerator/denominator`、`residual_numerator/denominator`；`comparison_cross_product_left/right`。两支横轴界与单调共轭界会在区间求交期间同时存活，所以不能借用 oval 的 40 项计数。位宽使用同一个 axis-aligned-conic 证明：axis-square 分子至多 `3*C+3`、分母至多 `3*C+2`，最终上界仍为 `max(5*C+2*F+6, C+6*F+56)`。Builder 在区间/数组建立前批准 total，并从固定开销反推不超过 4096 的最大 batch；sampler 在任何输出数组分配前按批准 N/B 与当前 limits 逐字段重算 budget 和 scene resource gate。
+
 历史配置字段 `max_branches_per_item` 与 `max_total_branches` 保持名称、值、版本不变；它们当前实际批准 drawable segment/path capacity，不表示数学曲线 branch count。数学 branch count 由 exact geometry plan 矩阵独立声明和验证。本步骤未增加 `ApplicationLimits` 字段，也未修改 limits version。
 
 ### typed sampled result 与 warning 注册
@@ -887,10 +924,12 @@ receipt 在签发前和消费时交叉校验上述矩阵，并独立快照 exact
 
 Circle/Ellipse 路径只消费已批准 `ParameterIntervalPlan`。它在预算复验后一次分配最终 x/y/ranges，按绝对样本索引分 batch 生成 theta/sin/cos，OPEN 用 `j/(N-1)` 并显式固定 stop，CLOSED 用 `j/N` 且不采样 stop。每点用 primitive coefficients 与 `Fraction.from_float` exact 计算归一化隐式残差：超过 `256*epsilon64` 拒绝，超过 `32*epsilon64` 的 segment 报告 precision-limited。成功数组和 ranges 均自有、只读并保存现有 plan snapshot；部分弧生成一次实际弧数的 clipping warning，完整 CLOSED 曲线不生成。取消覆盖 approval 后、分配前、每段/每 batch、坐标写入后、每 256 个 residual 点、冻结前及 snapshot/返回前；取消仍返回中性 `SamplingCancelled`。sampler 不调用 resolver、Builder 或角区间规划器。
 
-Stage 14B-2 验收矩阵继续覆盖 line v1 的全部冻结行为。Stage 14C 验收矩阵新增 angular policy、完整/裁切/跨 seam/最多四弧、切点和不可见、outward 自动视口、确定性点数与 batch、完整预算/receipt 篡改、残差 warning/error、所有新增取消检查点、正式数组所有权/冻结、Circle/Ellipse 直接原型及显函数/renderer/executor/workers/public API 静态边界。
+Hyperbola 路径同样只消费已签名批准的 `ParameterIntervalPlan`，并在首个输出数组分配前重投影几何、复验 interval/branch/policy/version/budget/limits。每个 OPEN 区间用 `j/(N-1)`，显式固定两个端点；按 batch 生成 sinh/cosh，拒绝任何非有限中间量或相邻点坍缩，不采用“生成 Inf/NaN 后过滤”的策略。每个 range 与一个非空 branch ID 元数据一一对应，x/y/ranges 均为自有只读数组；成功总是生成一次带实际 segment 数的 `viewport_clipped` warning，并按上述 exact residual 阈值可追加 precision warning。取消覆盖 receipt 后、context/budget 复验后、分配前后、每段/每 batch、坐标后、每 256 个 residual、metadata/冻结/snapshot/返回前；sampler 不重入 resolver、Builder 或 interval planner。
+
+Stage 14B-2 验收矩阵继续覆盖 line v1 的全部冻结行为。Stage 14C 验收矩阵覆盖 angular policy、完整/裁切/跨 seam/最多四弧、切点和不可见、outward 自动视口、确定性点数与 batch、完整预算/receipt 篡改、残差 warning/error、所有新增取消检查点、正式数组所有权/冻结、Circle/Ellipse 直接原型及显函数/renderer/executor/workers/public API 静态边界。Stage 14D-1 验收矩阵覆盖双曲线两种轴向、平移、左右/上下 branch identity、单支/拆分/双支/孤立切点/不可见、exact-before-root 决策、教学 auto viewport、导数点数、49 项 exact liveness 与所有预算边界、receipt 篡改、残差 warning/error、非有限与坍缩、所有取消检查点和相同静态架构边界。
 
 ### 明确未实现与门禁
 
-Stage 14C 仍未实现：双曲线分支、抛物线参数区间及其自动视口/采样 policy；这两类 exact conic 继续返回 strategy error。geometry renderer、contour 后备链路、多 item、`SceneRenderExecutor`/RenderActor/AppController/UI 整合也未实现。
+Stage 14D-1 已实现双曲线 AUTO_GEOMETRY、两支有限可见参数区间、预算审批与正式参数化采样。抛物线参数区间及其自动视口/采样 policy 仍未实现，`ParabolaSpec` 继续返回 strategy error。geometry renderer、contour 后备链路、多 item、`SceneRenderExecutor`/RenderActor/AppController/UI 整合也未实现。
 
-因此 P0-06 保持打开，不宣称 Stage 14、Stage 15 或 M1.5 完成；本步骤未进入 14D-1、14D-2、14E、Stage 15 或 renderer 整合。
+因此 P0-06 保持打开，不宣称 Stage 14、Stage 15 或 M1.5 完成；本步骤只完成 14D-1，尚未进入 14D-2、14E、Stage 15 或 renderer 整合。

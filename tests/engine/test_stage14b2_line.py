@@ -306,11 +306,8 @@ def test_auto_line_anchor_outside_supported_viewport_has_no_fallback() -> None:
     assert result.viewport is None
 
 
-@pytest.mark.parametrize(
-    "text",
-    ["4*x^2-9*y^2=36", "x^2=4*y"],
-)
-def test_unimplemented_conic_auto_viewport_remains_strategy_error(text: str) -> None:
+def test_parabola_auto_viewport_remains_strategy_error() -> None:
+    text = "x^2=4*y"
     result = resolve_single_item_viewport(_scene(text), ViewportRequest())
     assert result.error is not None
     assert result.error.code is ErrorCode.INTERNAL_ERROR
@@ -595,11 +592,8 @@ def test_unapproved_line_plan_is_rejected_before_allocation(
     assert result.code is ErrorCode.INTERNAL_ERROR
 
 
-@pytest.mark.parametrize(
-    "text",
-    ["4*x^2-9*y^2=36", "x^2=4*y"],
-)
-def test_builder_does_not_approve_unimplemented_conics(text: str) -> None:
+def test_builder_does_not_approve_parabola() -> None:
+    text = "x^2=4*y"
     result = _build(text)
     assert type(result) is ErrorInfo
     assert result.code is ErrorCode.INTERNAL_ERROR

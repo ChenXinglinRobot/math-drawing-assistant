@@ -325,8 +325,8 @@ def test_auto_oval_never_uses_explicit_probe_executor_or_fallback(
     assert result.viewport.source is ViewportSource.AUTO_GEOMETRY
 
 
-@pytest.mark.parametrize("text", ["4*x^2-9*y^2=36", "x^2=4*y"])
-def test_hyperbola_and_parabola_auto_viewports_remain_strategy_errors(text: str) -> None:
+def test_parabola_auto_viewport_remains_strategy_error() -> None:
+    text = "x^2=4*y"
     item = analyze_plot_item(
         PlotItemRequest("future", text, InputSource.MANUAL, PlotKind.AUTO, 0),
     )

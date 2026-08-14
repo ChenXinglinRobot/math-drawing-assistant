@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
-from math import acos, asin, ceil, isfinite, pi, tau, ulp
+from math import acosh, acos, asin, asinh, ceil, cosh, hypot, isfinite, nextafter, pi, sinh, tau, ulp
 
 from math_drawing_assistant.config import ApplicationLimits, DEFAULT_LIMITS
 from math_drawing_assistant.engine.numeric_executor import (
@@ -13,9 +13,16 @@ from math_drawing_assistant.engine.numeric_executor import (
     estimate_numeric_execution_cost,
 )
 from math_drawing_assistant.engine.parameterized_budget import (
+    build_hyperbola_parameterized_memory_budget,
     build_line_parameterized_memory_budget,
     build_oval_parameterized_memory_budget,
+    plan_hyperbola_batch_size,
     plan_oval_batch_size,
+)
+from math_drawing_assistant.engine.hyperbola_geometry import (
+    HyperbolaExecutionGeometry,
+    hyperbola_parameter_point,
+    project_hyperbola_geometry,
 )
 from math_drawing_assistant.engine.oval_geometry import (
     OvalExecutionGeometry,
@@ -24,6 +31,7 @@ from math_drawing_assistant.engine.oval_geometry import (
 )
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo
 from math_drawing_assistant.models.plot_specs import (
+    AxisOrientation,
     CircleSpec,
     EllipseSpec,
     ExplicitFunctionSpec,
@@ -37,12 +45,14 @@ from math_drawing_assistant.models.render_plan import (
     AngularSamplingPolicy,
     DEFAULT_ANGULAR_SAMPLING_POLICY,
     DEFAULT_EXPLICIT_SAMPLING_POLICY,
+    DEFAULT_HYPERBOLIC_SAMPLING_POLICY,
     DEFAULT_LINE_SAMPLING_POLICY,
     PARAMETERIZED_SAMPLER_CONTRACT_VERSION,
     RENDER_PLAN_CONTRACT_VERSION,
     ExplicitRenderItemPlan,
     ExplicitSamplingPolicy,
     GeometryRenderItemPlan,
+    HyperbolicSamplingPolicy,
     LineSamplingPolicy,
     LineSegmentPlan,
     ParameterIntervalPlan,
@@ -79,6 +89,9 @@ class RenderPlanBuilder:
     sampling_policy: ExplicitSamplingPolicy = DEFAULT_EXPLICIT_SAMPLING_POLICY
     line_sampling_policy: LineSamplingPolicy = DEFAULT_LINE_SAMPLING_POLICY
     angular_sampling_policy: AngularSamplingPolicy = DEFAULT_ANGULAR_SAMPLING_POLICY
+    hyperbolic_sampling_policy: HyperbolicSamplingPolicy = (
+        DEFAULT_HYPERBOLIC_SAMPLING_POLICY
+    )
 
     def build(
         self,
@@ -154,6 +167,24 @@ class RenderPlanBuilder:
                 show_legend=show_legend,
                 limits=limits,
                 policy=angular_policy_or_error,
+            )
+        if type(spec) is HyperbolaSpec:
+            hyperbolic_policy_or_error = _validated_hyperbolic_policy(
+                self.hyperbolic_sampling_policy,
+            )
+            if isinstance(hyperbolic_policy_or_error, ErrorInfo):
+                return hyperbolic_policy_or_error
+            return _build_hyperbola_plan(
+                scene_spec,
+                spec,
+                resolved_viewport,
+                image_width=image_width,
+                image_height=image_height,
+                dpi=dpi,
+                show_grid=show_grid,
+                show_legend=show_legend,
+                limits=limits,
+                policy=hyperbolic_policy_or_error,
             )
         if type(spec) is not ExplicitFunctionSpec:
             return _internal_error(
@@ -331,6 +362,29 @@ def _validated_angular_policy(
         return _internal_error(
             "angular_sampling_policy",
             "angular sampling policy version is not active",
+        )
+    return policy
+
+
+def _validated_hyperbolic_policy(
+    policy: object,
+) -> HyperbolicSamplingPolicy | ErrorInfo:
+    if type(policy) is not HyperbolicSamplingPolicy:
+        return _internal_error(
+            "hyperbolic_sampling_policy",
+            "builder requires an exact HyperbolicSamplingPolicy",
+        )
+    try:
+        policy.__post_init__()
+    except (AttributeError, TypeError, ValueError):
+        return _internal_error(
+            "hyperbolic_sampling_policy",
+            "hyperbolic sampling policy contract mismatch",
+        )
+    if policy != DEFAULT_HYPERBOLIC_SAMPLING_POLICY:
+        return _internal_error(
+            "hyperbolic_sampling_policy",
+            "hyperbolic sampling policy version is not active",
         )
     return policy
 
@@ -1041,6 +1095,448 @@ def _sampled_oval_intervals(
     return tuple(intervals)
 
 
+def _build_hyperbola_plan(
+    scene_spec: PlotSceneSpec,
+    spec: HyperbolaSpec,
+    resolved_viewport: ResolvedViewport,
+    *,
+    image_width: int,
+    image_height: int,
+    dpi: int,
+    show_grid: bool,
+    show_legend: bool,
+    limits: ApplicationLimits,
+    policy: HyperbolicSamplingPolicy,
+) -> RenderPlan | ErrorInfo:
+    """Approve visible branch intervals and the complete hyperbola budget."""
+
+    try:
+        geometry = project_hyperbola_geometry(spec)
+        bounds_or_error = _plan_visible_hyperbola_intervals(
+            geometry,
+            resolved_viewport,
+            policy=policy,
+        )
+    except MemoryError:
+        return _resource_error(
+            "max_estimated_memory_bytes",
+            "hyperbola interval-planning workspace allocation failed",
+            item_id=spec.item_id,
+        )
+    except (AttributeError, OverflowError, TypeError, ValueError, ZeroDivisionError):
+        return _numeric_range_error_for_hyperbola(
+            spec.item_id,
+            "hyperbola geometry cannot be represented for interval planning",
+        )
+    if isinstance(bounds_or_error, ErrorInfo):
+        return bounds_or_error
+
+    intervals_or_error = _sampled_hyperbola_intervals(
+        geometry,
+        resolved_viewport,
+        bounds_or_error,
+        image_width=image_width,
+        image_height=image_height,
+        limits=limits,
+        policy=policy,
+    )
+    if isinstance(intervals_or_error, ErrorInfo):
+        return intervals_or_error
+    intervals = intervals_or_error
+    total_samples = sum(interval.sample_count for interval in intervals)
+    try:
+        batch_size = plan_hyperbola_batch_size(
+            sample_count=total_samples,
+            preferred_batch_points=policy.preferred_batch_points,
+            image_width=image_width,
+            image_height=image_height,
+            limits=limits,
+        )
+        memory_budget = build_hyperbola_parameterized_memory_budget(
+            sample_count=total_samples,
+            batch_size=batch_size,
+            image_width=image_width,
+            image_height=image_height,
+            limits=limits,
+        )
+        try:
+            limits.validate_scene_resources(
+                item_count=1,
+                sample_points_per_item=total_samples,
+                total_sample_points=total_samples,
+                branches_per_item=4,
+                total_branches=4,
+                estimated_memory_bytes=memory_budget.total_bytes,
+            )
+        except (TypeError, ValueError):
+            return _resource_error(
+                "hyperbola_plan_resources",
+                "hyperbola sampling plan exceeds active scene resource limits",
+                item_id=spec.item_id,
+            )
+        item_plan = GeometryRenderItemPlan(
+            item_id=spec.item_id,
+            mathematical_branch_count=2,
+            segments=intervals,
+            sample_count=total_samples,
+            batch_size=batch_size,
+            max_segment_count=4,
+        )
+        plan = RenderPlan(
+            scene_spec=scene_spec,
+            resolved_viewport=resolved_viewport,
+            image_width=image_width,
+            image_height=image_height,
+            dpi=dpi,
+            plan_version=RENDER_PLAN_CONTRACT_VERSION,
+            limits_version=limits.version,
+            show_grid=show_grid,
+            show_legend=show_legend,
+            sampling_policy_version=policy.version,
+            numeric_executor_contract_version=None,
+            parameterized_sampler_contract_version=(
+                PARAMETERIZED_SAMPLER_CONTRACT_VERSION
+            ),
+            item_plan=item_plan,
+            memory_budget=memory_budget,
+        )
+        return _approve_render_plan(plan)
+    except MemoryError:
+        return _resource_error(
+            "max_estimated_memory_bytes",
+            "hyperbola plan or approval allocation failed",
+            item_id=spec.item_id,
+        )
+    except ValueError as exc:
+        if "budget cannot fit" in str(exc) or "resource" in str(exc):
+            return _resource_error(
+                "hyperbola_plan_resources",
+                "hyperbola sampling plan exceeds active scene resource limits",
+                item_id=spec.item_id,
+            )
+        return _internal_error(
+            "render_plan",
+            "approved hyperbola render-plan contract construction failed",
+            item_id=spec.item_id,
+        )
+    except (AttributeError, TypeError):
+        return _internal_error(
+            "render_plan",
+            "approved hyperbola render-plan contract construction failed",
+            item_id=spec.item_id,
+        )
+
+
+def _plan_visible_hyperbola_intervals(
+    geometry: HyperbolaExecutionGeometry,
+    viewport: ResolvedViewport,
+    *,
+    policy: HyperbolicSamplingPolicy,
+) -> tuple[tuple[int, float, float], ...] | ErrorInfo:
+    """Intersect exact branch bounds before converting approved roots to float64."""
+
+    left = Fraction.from_float(viewport.x_min)
+    right = Fraction.from_float(viewport.x_max)
+    bottom = Fraction.from_float(viewport.y_min)
+    top = Fraction.from_float(viewport.y_max)
+    if geometry.transverse_axis is AxisOrientation.HORIZONTAL:
+        transverse_lower, transverse_upper = left, right
+        transverse_center = geometry.center_x
+        conjugate_lower, conjugate_upper = bottom, top
+        conjugate_center = geometry.center_y
+    else:
+        transverse_lower, transverse_upper = bottom, top
+        transverse_center = geometry.center_y
+        conjugate_lower, conjugate_upper = left, right
+        conjugate_center = geometry.center_x
+
+    # Decide branch reachability, vertex exclusion, split topology, and isolated
+    # tangent contact entirely with exact binary-rational viewport edges before
+    # converting any sinh/cosh root to float64.
+    exact_branches: list[tuple[int, Fraction, Fraction, bool]] = []
+    axis_squared = geometry.semi_transverse_squared
+    for branch_id in (0, 1):
+        if branch_id == 0:
+            branch_lower = transverse_center - transverse_upper
+            branch_upper = transverse_center - transverse_lower
+        else:
+            branch_lower = transverse_lower - transverse_center
+            branch_upper = transverse_upper - transverse_center
+
+        if branch_upper <= 0:
+            continue
+        upper_squared = branch_upper * branch_upper
+        if upper_squared <= axis_squared:
+            # Equality is an isolated vertex contact, not a drawable interval.
+            continue
+        split_around_vertex = (
+            branch_lower > 0 and branch_lower * branch_lower > axis_squared
+        )
+        exact_branches.append(
+            (branch_id, branch_lower, branch_upper, split_around_vertex),
+        )
+
+    if not exact_branches:
+        return _no_visible_hyperbola_error(
+            geometry.spec.item_id,
+            "neither exact hyperbola branch can enter the viewport",
+        )
+
+    conjugate_start = _finite_asinh_root(
+        conjugate_lower - conjugate_center,
+        geometry.semi_conjugate_float,
+        geometry.max_safe_parameter,
+    )
+    conjugate_stop = _finite_asinh_root(
+        conjugate_upper - conjugate_center,
+        geometry.semi_conjugate_float,
+        geometry.max_safe_parameter,
+    )
+    if conjugate_start >= conjugate_stop:
+        return _numeric_range_error_for_hyperbola(
+            geometry.spec.item_id,
+            "hyperbola conjugate parameter bounds collapse in float64",
+        )
+
+    visible: list[tuple[int, float, float]] = []
+    for branch_id, branch_lower, branch_upper, split_around_vertex in exact_branches:
+        parameter_max = _finite_acosh_root(
+            branch_upper,
+            geometry.semi_transverse_float,
+            geometry.max_safe_parameter,
+        )
+        if split_around_vertex:
+            parameter_min = _finite_acosh_root(
+                branch_lower,
+                geometry.semi_transverse_float,
+                geometry.max_safe_parameter,
+            )
+            transverse_intervals = (
+                (-parameter_max, -parameter_min),
+                (parameter_min, parameter_max),
+            )
+        else:
+            transverse_intervals = ((-parameter_max, parameter_max),)
+
+        for transverse_start, transverse_stop in transverse_intervals:
+            start = max(transverse_start, conjugate_start)
+            stop = min(transverse_stop, conjugate_stop)
+            tolerance = policy.parameter_merge_ulps * max(ulp(start), ulp(stop))
+            if stop - start <= tolerance:
+                continue
+            corrected = _correct_hyperbola_interval_inward(
+                geometry,
+                viewport,
+                branch_id,
+                start,
+                stop,
+                policy=policy,
+            )
+            if corrected is None:
+                return _numeric_range_error_for_hyperbola(
+                    geometry.spec.item_id,
+                    "hyperbola parameter roots cannot be corrected inside the viewport",
+                )
+            start, stop = corrected
+            first = hyperbola_parameter_point(geometry, branch_id, start)
+            last = hyperbola_parameter_point(geometry, branch_id, stop)
+            if first == last:
+                return _numeric_range_error_for_hyperbola(
+                    geometry.spec.item_id,
+                    "visible hyperbola interval collapses to one float64 point",
+                )
+            visible.append((branch_id, start, stop))
+
+    visible.sort(key=lambda value: (value[0], value[1]))
+    if not visible:
+        return _no_visible_hyperbola_error(
+            geometry.spec.item_id,
+            "hyperbola has no non-zero visible interval in the viewport",
+        )
+    if len(visible) > 4:
+        return _numeric_range_error_for_hyperbola(
+            geometry.spec.item_id,
+            "hyperbola visibility produced more than four intervals",
+        )
+    return tuple(visible)
+
+
+def _finite_asinh_root(delta: Fraction, axis: float, safe_limit: float) -> float:
+    try:
+        converted = float(delta)
+    except OverflowError as exc:
+        raise OverflowError("hyperbola sinh boundary is not finite.") from exc
+    ratio = converted / axis
+    if not isfinite(ratio):
+        raise OverflowError("hyperbola sinh ratio is not finite.")
+    parameter = asinh(ratio)
+    if not isfinite(parameter) or abs(parameter) > safe_limit:
+        raise OverflowError("hyperbola sinh root exceeds the safe parameter range.")
+    return parameter
+
+
+def _finite_acosh_root(distance: Fraction, axis: float, safe_limit: float) -> float:
+    try:
+        converted = float(distance)
+    except OverflowError as exc:
+        raise OverflowError("hyperbola cosh boundary is not finite.") from exc
+    ratio = converted / axis
+    if not isfinite(ratio) or ratio <= 1.0:
+        raise OverflowError("hyperbola cosh root collapses in float64.")
+    parameter = acosh(ratio)
+    if not isfinite(parameter) or parameter <= 0.0 or parameter > safe_limit:
+        raise OverflowError("hyperbola cosh root exceeds the safe parameter range.")
+    return parameter
+
+
+def _correct_hyperbola_interval_inward(
+    geometry: HyperbolaExecutionGeometry,
+    viewport: ResolvedViewport,
+    branch_id: int,
+    start: float,
+    stop: float,
+    *,
+    policy: HyperbolicSamplingPolicy,
+) -> tuple[float, float] | None:
+    corrected_start = start
+    corrected_stop = stop
+    for _ in range(policy.parameter_merge_ulps + 1):
+        x_value, y_value = hyperbola_parameter_point(
+            geometry,
+            branch_id,
+            corrected_start,
+        )
+        if _inside_closed_viewport(
+            x_value,
+            y_value,
+            viewport,
+            ulps=0,
+        ):
+            break
+        corrected_start = nextafter(corrected_start, stop)
+    else:
+        return None
+    for _ in range(policy.parameter_merge_ulps + 1):
+        x_value, y_value = hyperbola_parameter_point(
+            geometry,
+            branch_id,
+            corrected_stop,
+        )
+        if _inside_closed_viewport(
+            x_value,
+            y_value,
+            viewport,
+            ulps=0,
+        ):
+            break
+        corrected_stop = nextafter(corrected_stop, corrected_start)
+    else:
+        return None
+    tolerance = policy.parameter_merge_ulps * max(
+        ulp(corrected_start),
+        ulp(corrected_stop),
+    )
+    if corrected_stop - corrected_start <= tolerance:
+        return None
+    return (corrected_start, corrected_stop)
+
+
+def _sampled_hyperbola_intervals(
+    geometry: HyperbolaExecutionGeometry,
+    viewport: ResolvedViewport,
+    bounds: tuple[tuple[int, float, float], ...],
+    *,
+    image_width: int,
+    image_height: int,
+    limits: ApplicationLimits,
+    policy: HyperbolicSamplingPolicy,
+) -> tuple[ParameterIntervalPlan, ...] | ErrorInfo:
+    x_span = viewport.x_max - viewport.x_min
+    y_span = viewport.y_max - viewport.y_min
+    intervals: list[ParameterIntervalPlan] = []
+    total_samples = 0
+    for branch_id, start, stop in bounds:
+        maximum_parameter = max(abs(start), abs(stop))
+        if maximum_parameter > geometry.max_safe_parameter:
+            return _numeric_range_error_for_hyperbola(
+                geometry.spec.item_id,
+                "hyperbola interval exceeds the safe parameter range",
+            )
+        try:
+            hyperbolic_sine = abs(sinh(maximum_parameter))
+            hyperbolic_cosine = cosh(maximum_parameter)
+            transverse_speed = (
+                geometry.outward_semi_transverse * hyperbolic_sine
+            )
+            conjugate_speed = (
+                geometry.outward_semi_conjugate * hyperbolic_cosine
+            )
+            if geometry.transverse_axis is AxisOrientation.HORIZONTAL:
+                x_speed = transverse_speed * image_width / x_span
+                y_speed = conjugate_speed * image_height / y_span
+            else:
+                x_speed = conjugate_speed * image_width / x_span
+                y_speed = transverse_speed * image_height / y_span
+            maximum_pixel_speed = hypot(x_speed, y_speed)
+            parameter_span = stop - start
+            planned = (
+                policy.samples_per_pixel
+                * maximum_pixel_speed
+                * parameter_span
+            )
+        except (OverflowError, ZeroDivisionError):
+            return _numeric_range_error_for_hyperbola(
+                geometry.spec.item_id,
+                "hyperbola sample-count derivative bound overflowed",
+            )
+        if (
+            not isfinite(maximum_pixel_speed)
+            or maximum_pixel_speed < 0.0
+            or not isfinite(planned)
+            or planned < 0.0
+        ):
+            return _numeric_range_error_for_hyperbola(
+                geometry.spec.item_id,
+                "hyperbola sample-count calculation is not finite",
+            )
+        try:
+            sample_count = max(
+                policy.minimum_open_segment_samples,
+                ceil(planned) + 1,
+            )
+        except (OverflowError, ValueError):
+            return _numeric_range_error_for_hyperbola(
+                geometry.spec.item_id,
+                "hyperbola sample count cannot be safely rounded",
+            )
+        total_samples += sample_count
+        if (
+            total_samples > limits.max_sample_points_per_item
+            or total_samples > limits.max_total_sample_points
+        ):
+            return _resource_error(
+                "hyperbola_sample_count",
+                "hyperbola sample count exceeds active point limits",
+                item_id=geometry.spec.item_id,
+            )
+        try:
+            intervals.append(
+                ParameterIntervalPlan(
+                    mathematical_branch_id=branch_id,
+                    parameter_start=start,
+                    parameter_stop=stop,
+                    sample_count=sample_count,
+                    closure=SegmentClosure.OPEN,
+                ),
+            )
+        except (TypeError, ValueError):
+            return _numeric_range_error_for_hyperbola(
+                geometry.spec.item_id,
+                "hyperbola parameter interval construction failed",
+            )
+    return tuple(intervals)
+
+
 def _line_segment_for_viewport(
     spec: LineSpec,
     viewport: ResolvedViewport,
@@ -1205,6 +1701,17 @@ def _no_visible_oval_error(item_id: str, technical_message: str) -> ErrorInfo:
     )
 
 
+def _no_visible_hyperbola_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NO_VISIBLE_CURVE,
+        user_message="The hyperbola has no drawable segment in the current viewport.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="hyperbola_visibility",
+        recoverable=True,
+    )
+
+
 def _numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
     return ErrorInfo(
         code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
@@ -1223,6 +1730,20 @@ def _numeric_range_error_for_oval(item_id: str, technical_message: str) -> Error
         technical_message=technical_message,
         item_id=item_id,
         field_name="oval_numeric_range",
+        recoverable=True,
+    )
+
+
+def _numeric_range_error_for_hyperbola(
+    item_id: str,
+    technical_message: str,
+) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
+        user_message="The hyperbola exceeds the supported numeric precision.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="hyperbola_numeric_range",
         recoverable=True,
     )
 

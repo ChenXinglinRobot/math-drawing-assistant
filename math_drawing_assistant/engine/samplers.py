@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from fractions import Fraction
-from math import isfinite, sqrt
+from math import isfinite, sqrt, ulp
 from statistics import median
 from typing import Protocol, TypeAlias
 
@@ -24,8 +24,15 @@ from math_drawing_assistant.engine.numeric_executor import (
     execute_explicit_function,
 )
 from math_drawing_assistant.engine.parameterized_budget import (
+    build_hyperbola_parameterized_memory_budget,
     build_line_parameterized_memory_budget,
     build_oval_parameterized_memory_budget,
+)
+from math_drawing_assistant.engine.hyperbola_geometry import (
+    HyperbolaExecutionGeometry,
+    hyperbola_parameter_point,
+    normalized_hyperbola_residual,
+    project_hyperbola_geometry,
 )
 from math_drawing_assistant.engine.oval_geometry import (
     OvalExecutionGeometry,
@@ -35,6 +42,7 @@ from math_drawing_assistant.engine.oval_geometry import (
 )
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo
 from math_drawing_assistant.models.plot_specs import (
+    AxisOrientation,
     CircleSpec,
     EllipseSpec,
     ExplicitFunctionSpec,
@@ -46,12 +54,14 @@ from math_drawing_assistant.models.plot_specs import (
 from math_drawing_assistant.models.render_plan import (
     DEFAULT_ANGULAR_SAMPLING_POLICY,
     DEFAULT_EXPLICIT_SAMPLING_POLICY,
+    DEFAULT_HYPERBOLIC_SAMPLING_POLICY,
     DEFAULT_LINE_SAMPLING_POLICY,
     PARAMETERIZED_SAMPLER_CONTRACT_VERSION,
     AngularSamplingPolicy,
     ExplicitRenderItemPlan,
     ExplicitSamplingPolicy,
     GeometryRenderItemPlan,
+    HyperbolicSamplingPolicy,
     LineSamplingPolicy,
     LineSegmentPlan,
     ParameterIntervalPlan,
@@ -455,6 +465,19 @@ class _OvalSamplingContext:
 
 
 @dataclass(frozen=True, slots=True)
+class _HyperbolaSamplingContext:
+    plan: RenderPlan
+    spec: HyperbolaSpec
+    viewport: ResolvedViewport
+    item_plan: GeometryRenderItemPlan
+    intervals: tuple[ParameterIntervalPlan, ...]
+    memory_budget: ParameterizedRenderMemoryBudget
+    limits: ApplicationLimits
+    policy: HyperbolicSamplingPolicy
+    geometry: HyperbolaExecutionGeometry
+
+
+@dataclass(frozen=True, slots=True)
 class _SegmentScan:
     ranges: tuple[tuple[int, int], ...]
     finite_sample_count: int
@@ -537,6 +560,11 @@ def _sample_approved_parameterized_curve(
     spec = approved_plan.scene_spec.items[0]
     if type(spec) in {CircleSpec, EllipseSpec}:
         return _sample_approved_oval_curve(
+            approved_plan,
+            cancellation_probe=cancellation_probe,
+        )
+    if type(spec) is HyperbolaSpec:
+        return _sample_approved_hyperbola_curve(
             approved_plan,
             cancellation_probe=cancellation_probe,
         )
@@ -983,6 +1011,530 @@ def _sample_approved_oval_curve(
     if cancelled_or_error:
         return SamplingCancelled(context.spec.item_id)
     return sampled
+
+
+def _sample_approved_hyperbola_curve(
+    approved_plan: RenderPlan,
+    *,
+    cancellation_probe: CancellationProbe | None,
+) -> SamplingOutcome:
+    """Execute one approved HyperbolaSpec plan in bounded sinh/cosh batches."""
+
+    context_or_error = _validated_hyperbola_sampling_context(approved_plan)
+    if isinstance(context_or_error, ErrorInfo):
+        return context_or_error
+    context = context_or_error
+
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    segment_count = len(context.intervals)
+    try:
+        x = np.empty(context.item_plan.sample_count, dtype=np.float64)
+        y = np.empty(context.item_plan.sample_count, dtype=np.float64)
+        segment_ranges = np.empty((segment_count, 2), dtype=np.int64)
+    except MemoryError:
+        return _allocation_error(
+            context.spec.item_id,
+            "formal hyperbola output allocation failed",
+        )
+    except (TypeError, ValueError):
+        return _contract_error(
+            context.spec.item_id,
+            "formal hyperbola output allocation failed",
+        )
+    if not _owned_writable_vector(x, context.item_plan.sample_count):
+        return _contract_error(context.spec.item_id, "formal hyperbola x allocation is invalid")
+    if not _owned_writable_vector(y, context.item_plan.sample_count):
+        return _contract_error(context.spec.item_id, "formal hyperbola y allocation is invalid")
+    if (
+        type(segment_ranges) is not np.ndarray
+        or segment_ranges.dtype != np.dtype(np.int64)
+        or segment_ranges.shape != (segment_count, 2)
+        or not segment_ranges.flags.owndata
+        or not segment_ranges.flags.writeable
+    ):
+        return _contract_error(context.spec.item_id, "hyperbola segment ranges are invalid")
+
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    offset = 0
+    precision_limited_segment_count = 0
+    for segment_index, interval in enumerate(context.intervals):
+        cancelled_or_error = _poll_cancellation(
+            cancellation_probe,
+            item_id=context.spec.item_id,
+        )
+        if isinstance(cancelled_or_error, ErrorInfo):
+            return cancelled_or_error
+        if cancelled_or_error:
+            return SamplingCancelled(context.spec.item_id)
+
+        segment_start = offset
+        segment_stop = segment_start + interval.sample_count
+        segment_ranges[segment_index, 0] = segment_start
+        segment_ranges[segment_index, 1] = segment_stop
+        interval_span = interval.parameter_stop - interval.parameter_start
+        denominator = interval.sample_count - 1
+        branch_sign = -1.0 if interval.mathematical_branch_id == 0 else 1.0
+        precision_limited = False
+        validation_since_poll = 0
+
+        for batch_start in range(0, interval.sample_count, context.item_plan.batch_size):
+            batch_stop = min(
+                interval.sample_count,
+                batch_start + context.item_plan.batch_size,
+            )
+            cancelled_or_error = _poll_cancellation(
+                cancellation_probe,
+                item_id=context.spec.item_id,
+            )
+            if isinstance(cancelled_or_error, ErrorInfo):
+                return cancelled_or_error
+            if cancelled_or_error:
+                return SamplingCancelled(context.spec.item_id)
+
+            try:
+                parameter = np.arange(batch_start, batch_stop, dtype=np.float64)
+                np.divide(parameter, denominator, out=parameter)
+                np.multiply(parameter, interval_span, out=parameter)
+                np.add(parameter, interval.parameter_start, out=parameter)
+                if batch_start == 0:
+                    parameter[0] = interval.parameter_start
+                if batch_stop == interval.sample_count:
+                    parameter[-1] = interval.parameter_stop
+                with np.errstate(over="raise", invalid="raise"):
+                    hyperbolic_cosine = np.cosh(parameter)
+                    hyperbolic_sine = np.sinh(parameter)
+                    destination = slice(
+                        segment_start + batch_start,
+                        segment_start + batch_stop,
+                    )
+                    if context.geometry.transverse_axis is AxisOrientation.HORIZONTAL:
+                        np.multiply(
+                            hyperbolic_cosine,
+                            branch_sign * context.geometry.semi_transverse_float,
+                            out=x[destination],
+                        )
+                        np.add(
+                            x[destination],
+                            context.geometry.center_x_float,
+                            out=x[destination],
+                        )
+                        np.multiply(
+                            hyperbolic_sine,
+                            context.geometry.semi_conjugate_float,
+                            out=y[destination],
+                        )
+                        np.add(
+                            y[destination],
+                            context.geometry.center_y_float,
+                            out=y[destination],
+                        )
+                    else:
+                        np.multiply(
+                            hyperbolic_sine,
+                            context.geometry.semi_conjugate_float,
+                            out=x[destination],
+                        )
+                        np.add(
+                            x[destination],
+                            context.geometry.center_x_float,
+                            out=x[destination],
+                        )
+                        np.multiply(
+                            hyperbolic_cosine,
+                            branch_sign * context.geometry.semi_transverse_float,
+                            out=y[destination],
+                        )
+                        np.add(
+                            y[destination],
+                            context.geometry.center_y_float,
+                            out=y[destination],
+                        )
+
+                if batch_start == 0:
+                    x[segment_start], y[segment_start] = _hyperbola_scalar_point(
+                        context.geometry,
+                        interval.mathematical_branch_id,
+                        interval.parameter_start,
+                    )
+                if batch_stop == interval.sample_count:
+                    x[segment_stop - 1], y[segment_stop - 1] = _hyperbola_scalar_point(
+                        context.geometry,
+                        interval.mathematical_branch_id,
+                        interval.parameter_stop,
+                    )
+
+                finite = np.empty(parameter.shape, dtype=np.bool_)
+                np.isfinite(parameter, out=finite)
+                all_finite = bool(np.all(finite))
+                np.isfinite(hyperbolic_cosine, out=finite)
+                all_finite = all_finite and bool(np.all(finite))
+                np.isfinite(hyperbolic_sine, out=finite)
+                all_finite = all_finite and bool(np.all(finite))
+                np.isfinite(x[destination], out=finite)
+                all_finite = all_finite and bool(np.all(finite))
+                np.isfinite(y[destination], out=finite)
+                all_finite = all_finite and bool(np.all(finite))
+                if not all_finite:
+                    return _hyperbola_numeric_range_error(
+                        context.spec.item_id,
+                        "hyperbola batch produced a non-finite sample",
+                    )
+            except MemoryError:
+                return _allocation_error(
+                    context.spec.item_id,
+                    "hyperbola batch allocation failed",
+                )
+            except (FloatingPointError, IndexError, OverflowError, TypeError, ValueError):
+                return _hyperbola_numeric_range_error(
+                    context.spec.item_id,
+                    "hyperbola batch execution failed",
+                )
+
+            cancelled_or_error = _poll_cancellation(
+                cancellation_probe,
+                item_id=context.spec.item_id,
+            )
+            if isinstance(cancelled_or_error, ErrorInfo):
+                return cancelled_or_error
+            if cancelled_or_error:
+                return SamplingCancelled(context.spec.item_id)
+
+            for sample_index in range(destination.start, destination.stop):
+                if validation_since_poll >= context.policy.cancellation_check_interval:
+                    cancelled_or_error = _poll_cancellation(
+                        cancellation_probe,
+                        item_id=context.spec.item_id,
+                    )
+                    if isinstance(cancelled_or_error, ErrorInfo):
+                        return cancelled_or_error
+                    if cancelled_or_error:
+                        return SamplingCancelled(context.spec.item_id)
+                    validation_since_poll = 0
+                sample_x = float(x[sample_index])
+                sample_y = float(y[sample_index])
+                if not _point_within_viewport_ulps(
+                    sample_x,
+                    sample_y,
+                    context.viewport,
+                    context.policy.viewport_boundary_ulps,
+                ):
+                    return _hyperbola_numeric_range_error(
+                        context.spec.item_id,
+                        "approved hyperbola sample lies outside the viewport tolerance",
+                    )
+                try:
+                    residual = normalized_hyperbola_residual(
+                        context.geometry,
+                        sample_x,
+                        sample_y,
+                    )
+                except MemoryError:
+                    return _allocation_error(
+                        context.spec.item_id,
+                        "hyperbola exact residual allocation failed",
+                    )
+                except (AttributeError, OverflowError, TypeError, ValueError, ZeroDivisionError):
+                    return _hyperbola_numeric_range_error(
+                        context.spec.item_id,
+                        "hyperbola exact residual validation failed",
+                    )
+                if residual > context.policy.maximum_residual_ulps * _FLOAT64_EPSILON:
+                    return _hyperbola_numeric_range_error(
+                        context.spec.item_id,
+                        "approved hyperbola residual exceeds the hard threshold",
+                    )
+                if residual > context.policy.target_residual_ulps * _FLOAT64_EPSILON:
+                    precision_limited = True
+                validation_since_poll += 1
+
+        if not _segment_contains_distinct_adjacent_points(x, y, segment_start, segment_stop):
+            return _hyperbola_numeric_range_error(
+                context.spec.item_id,
+                "approved hyperbola segment collapses in float64",
+            )
+        if precision_limited:
+            precision_limited_segment_count += 1
+        offset = segment_stop
+
+    if offset != context.item_plan.sample_count:
+        return _contract_error(
+            context.spec.item_id,
+            "hyperbola sample ranges do not fill output",
+        )
+
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    try:
+        metadata = tuple(
+            SampledSegmentMetadata(
+                mathematical_branch_id=interval.mathematical_branch_id,
+                closure=SegmentClosure.OPEN,
+            )
+            for interval in context.intervals
+        )
+        diagnostics = ParameterizedSamplingDiagnostics(
+            sampled_segment_count=segment_count,
+            sampled_point_count=context.item_plan.sample_count,
+        )
+        warnings = [
+            SamplingWarning(
+                code=SamplingWarningCode.VIEWPORT_CLIPPED,
+                metrics=ViewportClippedMetrics(clipped_segment_count=segment_count),
+            ),
+        ]
+        if precision_limited_segment_count:
+            warnings.append(
+                SamplingWarning(
+                    code=SamplingWarningCode.SAMPLING_PRECISION_LIMITED,
+                    metrics=SamplingPrecisionLimitedMetrics(
+                        limited_segment_count=precision_limited_segment_count,
+                    ),
+                ),
+            )
+    except MemoryError:
+        return _allocation_error(context.spec.item_id, "hyperbola metadata allocation failed")
+    except (AttributeError, TypeError, ValueError):
+        return _contract_error(context.spec.item_id, "hyperbola metadata construction failed")
+
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    x.setflags(write=False)
+    y.setflags(write=False)
+    segment_ranges.setflags(write=False)
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+
+    try:
+        sampled = SampledParameterizedCurve(
+            item_id=context.spec.item_id,
+            x=x,
+            y=y,
+            segment_ranges=segment_ranges,
+            segment_metadata=metadata,
+            visible_segment_count=segment_count,
+            warnings=tuple(warnings),
+            diagnostics=diagnostics,
+        )
+        object.__setattr__(
+            sampled,
+            "_plan_contract_snapshot",
+            _snapshot_approved_render_plan(context.plan),
+        )
+    except MemoryError:
+        return _allocation_error(
+            context.spec.item_id,
+            "hyperbola result snapshot allocation failed",
+        )
+    except (AttributeError, TypeError, ValueError):
+        return _contract_error(
+            context.spec.item_id,
+            "frozen hyperbola sampling result contract failed",
+        )
+
+    cancelled_or_error = _poll_cancellation(
+        cancellation_probe,
+        item_id=context.spec.item_id,
+    )
+    if isinstance(cancelled_or_error, ErrorInfo):
+        return cancelled_or_error
+    if cancelled_or_error:
+        return SamplingCancelled(context.spec.item_id)
+    return sampled
+
+
+def _validated_hyperbola_sampling_context(
+    plan: RenderPlan,
+) -> _HyperbolaSamplingContext | ErrorInfo:
+    """Revalidate the signed plan, full budget, and safe parameter range."""
+
+    limits = DEFAULT_LIMITS
+    policy = DEFAULT_HYPERBOLIC_SAMPLING_POLICY
+    if plan.limits_version != limits.version:
+        return _contract_error(None, "render plan limits version is not active")
+    if type(plan.scene_spec) is not PlotSceneSpec or len(plan.scene_spec.items) != 1:
+        return _contract_error(None, "render plan must contain one exact scene specification")
+    spec = plan.scene_spec.items[0]
+    if type(spec) is not HyperbolaSpec:
+        return _contract_error(None, "render plan item is not an exact HyperbolaSpec")
+    if plan.sampling_policy_version != policy.version:
+        return _contract_error(spec.item_id, "hyperbolic sampling policy version is not active")
+    if plan.numeric_executor_contract_version is not None:
+        return _contract_error(spec.item_id, "hyperbola plan must not carry a numeric executor version")
+    if (
+        plan.parameterized_sampler_contract_version
+        != PARAMETERIZED_SAMPLER_CONTRACT_VERSION
+    ):
+        return _contract_error(spec.item_id, "parameterized sampler version is not active")
+    if type(plan.resolved_viewport) is not ResolvedViewport:
+        return _contract_error(spec.item_id, "hyperbola plan viewport is not exact")
+    if type(plan.item_plan) is not GeometryRenderItemPlan:
+        return _contract_error(spec.item_id, "hyperbola item plan is missing")
+    if type(plan.memory_budget) is not ParameterizedRenderMemoryBudget:
+        return _contract_error(spec.item_id, "hyperbola memory budget is missing")
+    item_plan = plan.item_plan
+    budget = plan.memory_budget
+    if (
+        type(item_plan.segments) is not tuple
+        or not item_plan.segments
+        or not all(type(interval) is ParameterIntervalPlan for interval in item_plan.segments)
+    ):
+        return _contract_error(spec.item_id, "hyperbola plan requires exact parameter intervals")
+    intervals = item_plan.segments
+    try:
+        plan.scene_spec.__post_init__()
+        spec.__post_init__()
+        plan.resolved_viewport.__post_init__()
+        item_plan.__post_init__()
+        for interval in intervals:
+            interval.__post_init__()
+        budget.__post_init__()
+        policy.__post_init__()
+        geometry = project_hyperbola_geometry(spec)
+        for interval in intervals:
+            if (
+                interval.closure is not SegmentClosure.OPEN
+                or abs(interval.parameter_start) > geometry.max_safe_parameter
+                or abs(interval.parameter_stop) > geometry.max_safe_parameter
+            ):
+                raise OverflowError("approved hyperbola parameter range is unsafe")
+            for parameter in (interval.parameter_start, interval.parameter_stop):
+                point = hyperbola_parameter_point(
+                    geometry,
+                    interval.mathematical_branch_id,
+                    parameter,
+                )
+                if not _point_within_viewport_ulps(
+                    point[0],
+                    point[1],
+                    plan.resolved_viewport,
+                    policy.viewport_boundary_ulps,
+                ):
+                    raise OverflowError("approved hyperbola endpoint is outside viewport")
+        recomputed_budget = build_hyperbola_parameterized_memory_budget(
+            sample_count=item_plan.sample_count,
+            batch_size=item_plan.batch_size,
+            image_width=plan.image_width,
+            image_height=plan.image_height,
+            limits=limits,
+        )
+    except MemoryError:
+        return _allocation_error(
+            spec.item_id,
+            "hyperbola budget revalidation allocation failed",
+        )
+    except (AttributeError, TypeError, ValueError):
+        return _contract_error(
+            spec.item_id,
+            "approved hyperbola plan contains an invalid contract",
+        )
+    except (OverflowError, ZeroDivisionError):
+        return _hyperbola_numeric_range_error(
+            spec.item_id,
+            "approved hyperbola geometry is outside the executable float64 range",
+        )
+    if (
+        spec.provenance.limits_version != limits.version
+        or item_plan.item_id != spec.item_id
+        or item_plan.mathematical_branch_count != 2
+        or item_plan.max_segment_count != 4
+        or len(intervals) > 4
+    ):
+        return _contract_error(spec.item_id, "hyperbola plan identity or capacity is invalid")
+    if recomputed_budget != budget:
+        return _contract_error(spec.item_id, "hyperbola parameterized budget is not active")
+    try:
+        limits.validate_scene_resources(
+            item_count=1,
+            sample_points_per_item=item_plan.sample_count,
+            total_sample_points=item_plan.sample_count,
+            branches_per_item=4,
+            total_branches=4,
+            estimated_memory_bytes=budget.total_bytes,
+        )
+    except (TypeError, ValueError):
+        return _parameterized_resource_error(
+            spec.item_id,
+            "approved hyperbola plan exceeds active scene resource limits",
+        )
+    return _HyperbolaSamplingContext(
+        plan=plan,
+        spec=spec,
+        viewport=plan.resolved_viewport,
+        item_plan=item_plan,
+        intervals=intervals,
+        memory_budget=budget,
+        limits=limits,
+        policy=policy,
+        geometry=geometry,
+    )
+
+
+def _hyperbola_scalar_point(
+    geometry: HyperbolaExecutionGeometry,
+    mathematical_branch_id: int,
+    parameter: float,
+) -> tuple[float, float]:
+    return hyperbola_parameter_point(geometry, mathematical_branch_id, parameter)
+
+
+def _point_within_viewport_ulps(
+    x_value: float,
+    y_value: float,
+    viewport: ResolvedViewport,
+    boundary_ulps: int,
+) -> bool:
+    x_tolerance = boundary_ulps * max(
+        ulp(x_value),
+        ulp(viewport.x_min),
+        ulp(viewport.x_max),
+        ulp(viewport.x_max - viewport.x_min),
+    )
+    y_tolerance = boundary_ulps * max(
+        ulp(y_value),
+        ulp(viewport.y_min),
+        ulp(viewport.y_max),
+        ulp(viewport.y_max - viewport.y_min),
+    )
+    return (
+        viewport.x_min - x_tolerance <= x_value <= viewport.x_max + x_tolerance
+        and viewport.y_min - y_tolerance <= y_value <= viewport.y_max + y_tolerance
+    )
 
 
 def _validated_oval_sampling_context(
@@ -1886,6 +2438,17 @@ def _oval_numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo
         technical_message=technical_message,
         item_id=item_id,
         field_name="oval_residual",
+        recoverable=True,
+    )
+
+
+def _hyperbola_numeric_range_error(item_id: str, technical_message: str) -> ErrorInfo:
+    return ErrorInfo(
+        code=ErrorCode.NUMERIC_RANGE_UNSUPPORTED,
+        user_message="The hyperbola exceeds the supported numeric precision.",
+        technical_message=technical_message,
+        item_id=item_id,
+        field_name="hyperbola_residual",
         recoverable=True,
     )
 

@@ -231,6 +231,65 @@ DEFAULT_ANGULAR_SAMPLING_POLICY: Final[AngularSamplingPolicy] = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class HyperbolicSamplingPolicy:
+    """Scalar-only active policy for exact hyperbola sampling."""
+
+    version: str
+    samples_per_pixel: int
+    minimum_open_segment_samples: int
+    preferred_batch_points: int
+    parameter_merge_ulps: int
+    viewport_boundary_ulps: int
+    target_residual_ulps: int
+    maximum_residual_ulps: int
+    cancellation_check_interval: int
+
+    def __post_init__(self) -> None:
+        _nonempty_version(self.version, "version")
+        for name in (
+            "samples_per_pixel",
+            "minimum_open_segment_samples",
+            "preferred_batch_points",
+            "parameter_merge_ulps",
+            "viewport_boundary_ulps",
+            "target_residual_ulps",
+            "maximum_residual_ulps",
+            "cancellation_check_interval",
+        ):
+            _positive_int(getattr(self, name), name)
+        if self.minimum_open_segment_samples < 2:
+            raise ValueError("open hyperbolic segments need at least two samples.")
+        if self.target_residual_ulps >= self.maximum_residual_ulps:
+            raise ValueError("target residual must be below the maximum residual.")
+        if self.version == "hyperbolic-sampling-policy-v1" and (
+            self.samples_per_pixel,
+            self.minimum_open_segment_samples,
+            self.preferred_batch_points,
+            self.parameter_merge_ulps,
+            self.viewport_boundary_ulps,
+            self.target_residual_ulps,
+            self.maximum_residual_ulps,
+            self.cancellation_check_interval,
+        ) != (1, 2, 4_096, 8, 8, 32, 256, 256):
+            raise ValueError("hyperbolic-sampling-policy-v1 semantics are fixed.")
+
+
+DEFAULT_HYPERBOLIC_SAMPLING_POLICY: Final[HyperbolicSamplingPolicy] = (
+    HyperbolicSamplingPolicy(
+        version="hyperbolic-sampling-policy-v1",
+        samples_per_pixel=1,
+        minimum_open_segment_samples=2,
+        preferred_batch_points=4_096,
+        parameter_merge_ulps=8,
+        viewport_boundary_ulps=8,
+        target_residual_ulps=32,
+        maximum_residual_ulps=256,
+        cancellation_check_interval=256,
+    )
+)
+
+
 class SegmentClosure(str, Enum):
     """Whether a parameterized segment is mathematically open or closed."""
 
@@ -1087,6 +1146,10 @@ def _validate_cross_plan_contracts(plan: RenderPlan) -> None:
             if plan.sampling_policy_version != DEFAULT_ANGULAR_SAMPLING_POLICY.version:
                 raise ValueError("angular sampling policy version is not active.")
             _validate_oval_parameter_plan(item_plan)
+        elif type(item) is HyperbolaSpec:
+            if plan.sampling_policy_version != DEFAULT_HYPERBOLIC_SAMPLING_POLICY.version:
+                raise ValueError("hyperbolic sampling policy version is not active.")
+            _validate_hyperbola_parameter_plan(item_plan)
         expected_branch_count, expected_capacity, expected_segment_type = (
             _geometry_approval_shape(type(item))
         )
@@ -1176,6 +1239,48 @@ def _validate_oval_parameter_plan(item_plan: GeometryRenderItemPlan) -> None:
         > typed_intervals[0].parameter_start
     ):
         raise ValueError("expanded angular interval overlaps the first visible interval.")
+
+
+def _validate_hyperbola_parameter_plan(item_plan: GeometryRenderItemPlan) -> None:
+    policy = DEFAULT_HYPERBOLIC_SAMPLING_POLICY
+    intervals = item_plan.segments
+    if any(type(interval) is not ParameterIntervalPlan for interval in intervals):
+        raise TypeError("hyperbola plans require exact parameter intervals.")
+    typed_intervals = tuple(intervals)
+    if any(interval.closure is not SegmentClosure.OPEN for interval in typed_intervals):
+        raise ValueError("hyperbola intervals must be open.")
+    if any(interval.mathematical_branch_id not in {0, 1} for interval in typed_intervals):
+        raise ValueError("hyperbola intervals require branch zero or one.")
+    if (
+        tuple(
+            sorted(
+                typed_intervals,
+                key=lambda value: (
+                    value.mathematical_branch_id,
+                    value.parameter_start,
+                ),
+            ),
+        )
+        != typed_intervals
+    ):
+        raise ValueError("hyperbola intervals must be stably ordered by branch and start.")
+    if item_plan.batch_size > policy.preferred_batch_points:
+        raise ValueError("hyperbola batch size exceeds the active policy.")
+    for branch_id in (0, 1):
+        branch_intervals = tuple(
+            interval
+            for interval in typed_intervals
+            if interval.mathematical_branch_id == branch_id
+        )
+        if len(branch_intervals) > 2:
+            raise ValueError("each hyperbola branch supports at most two intervals.")
+        previous_stop: float | None = None
+        for interval in branch_intervals:
+            if interval.sample_count < policy.minimum_open_segment_samples:
+                raise ValueError("hyperbola sampling is below the active minimum.")
+            if previous_stop is not None and interval.parameter_start < previous_stop:
+                raise ValueError("hyperbola intervals on one branch must not overlap.")
+            previous_stop = interval.parameter_stop
 
 
 def _validate_geometry_nested(
@@ -1305,11 +1410,13 @@ __all__ = [
     "AngularSamplingPolicy",
     "DEFAULT_ANGULAR_SAMPLING_POLICY",
     "DEFAULT_EXPLICIT_SAMPLING_POLICY",
+    "DEFAULT_HYPERBOLIC_SAMPLING_POLICY",
     "DEFAULT_LINE_SAMPLING_POLICY",
     "ExplicitRenderItemPlan",
     "ExplicitSamplingPolicy",
     "GeometryRenderItemPlan",
     "GeometrySegmentPlan",
+    "HyperbolicSamplingPolicy",
     "LineSegmentPlan",
     "LineSamplingPolicy",
     "PARAMETERIZED_SAMPLER_CONTRACT_VERSION",

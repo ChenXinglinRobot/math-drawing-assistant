@@ -213,6 +213,18 @@ def _geometry_item_plan(spec: PlotItemSpec) -> GeometryRenderItemPlan:
 def _approved_geometry_plan(text: str) -> RenderPlan:
     scene = _scene(text)
     spec = scene.items[0]
+    if type(spec) is HyperbolaSpec:
+        built = RenderPlanBuilder().build(
+            scene,
+            _viewport(),
+            image_width=800,
+            image_height=600,
+            dpi=96,
+            show_grid=True,
+            show_legend=False,
+        )
+        assert type(built) is RenderPlan, built
+        return built
     plan = RenderPlan(
         scene_spec=scene,
         resolved_viewport=_viewport(),
@@ -348,11 +360,10 @@ def test_manual_geometry_resolves_without_probe_or_fallback(
     assert result.viewport.source is ViewportSource.MANUAL
 
 
-@pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES[3:]])
-def test_auto_geometry_is_nonrecoverable_strategy_failure_before_probe(
-    text: str,
+def test_parabola_auto_geometry_is_nonrecoverable_strategy_failure_before_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    text = "x^2=4*y"
     def forbidden(*args: object, **kwargs: object) -> object:
         raise AssertionError("unimplemented conic auto geometry must not probe or estimate")
 
@@ -482,10 +493,8 @@ def test_approval_rejects_version_memory_and_spec_plan_crosses() -> None:
         render_plan_model._approve_render_plan(ordinary_explicit)
 
 
-@pytest.mark.parametrize("text", [case[0] for case in _GEOMETRY_CASES[3:]])
-def test_parameterized_sampler_keeps_unimplemented_conics_behind_strategy_error(
-    text: str,
-) -> None:
+def test_parameterized_sampler_keeps_parabola_behind_strategy_error() -> None:
+    text = "x^2=4*y"
     result = sample_parameterized_curve(_approved_geometry_plan(text))
     assert type(result) is ErrorInfo
     assert result.code is ErrorCode.INTERNAL_ERROR
@@ -571,7 +580,7 @@ def test_approval_rejects_missing_explicit_numeric_executor_version() -> None:
         render_plan_model._approve_render_plan(invalid_plan)
 
 
-def test_builder_geometry_failure_precedes_numeric_cost_and_has_no_bypass(
+def test_parabola_builder_failure_precedes_numeric_cost_and_has_no_bypass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def forbidden(*args: object, **kwargs: object) -> object:
@@ -579,7 +588,7 @@ def test_builder_geometry_failure_precedes_numeric_cost_and_has_no_bypass(
 
     monkeypatch.setattr(render_plan_builder, "estimate_numeric_execution_cost", forbidden)
     result = RenderPlanBuilder().build(
-        _scene("4*x^2-9*y^2=36"),
+        _scene("x^2=4*y"),
         _viewport(),
         image_width=800,
         image_height=600,

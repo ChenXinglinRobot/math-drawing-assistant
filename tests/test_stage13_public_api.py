@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
+
+import pytest
 
 import math_drawing_assistant.engine as public_engine
 import math_drawing_assistant.models as public_models
@@ -13,12 +16,14 @@ from math_drawing_assistant.engine.plot_analyzer import (
 from math_drawing_assistant.models import (
     AxisOrientation,
     CircleSpec,
+    DEFAULT_HYPERBOLIC_SAMPLING_POLICY,
     EllipseSpec,
     EquationProvenance,
     ErrorCode,
     ErrorInfo,
     ExplicitFunctionSpec,
     HyperbolaSpec,
+    HyperbolicSamplingPolicy,
     InputSource,
     LineSpec,
     ParabolaOpening,
@@ -29,6 +34,7 @@ from math_drawing_assistant.models import (
     PrimitiveEquationCoefficients,
 )
 from math_drawing_assistant.models import plot_specs as implementation_plot_specs
+from math_drawing_assistant.models import render_plan as implementation_render_plan
 
 
 _ROOT = Path(__file__).parents[1]
@@ -60,6 +66,7 @@ _EXPECTED_MODEL_EXPORTS = frozenset(
         "ConstantNode",
         "DEFAULT_ANGULAR_SAMPLING_POLICY",
         "DEFAULT_EXPLICIT_SAMPLING_POLICY",
+        "DEFAULT_HYPERBOLIC_SAMPLING_POLICY",
         "DEFAULT_LINE_SAMPLING_POLICY",
         "EllipseSpec",
         "EquationProvenance",
@@ -74,6 +81,7 @@ _EXPECTED_MODEL_EXPORTS = frozenset(
         "FunctionCallNode",
         "FunctionName",
         "HyperbolaSpec",
+        "HyperbolicSamplingPolicy",
         "InputSource",
         "LineSpec",
         "LineSamplingPolicy",
@@ -250,6 +258,33 @@ def test_models_package_publishes_the_stage_13_contract_by_identity() -> None:
     } == {name: True for name in _STAGE_13_MODEL_EXPORTS}
     assert set(public_types) == _STAGE_13_MODEL_EXPORTS
 
+    assert (
+        public_models.HyperbolicSamplingPolicy
+        is implementation_render_plan.HyperbolicSamplingPolicy
+        is HyperbolicSamplingPolicy
+    )
+    assert (
+        public_models.DEFAULT_HYPERBOLIC_SAMPLING_POLICY
+        is implementation_render_plan.DEFAULT_HYPERBOLIC_SAMPLING_POLICY
+        is DEFAULT_HYPERBOLIC_SAMPLING_POLICY
+    )
+    policy = DEFAULT_HYPERBOLIC_SAMPLING_POLICY
+    assert type(policy) is HyperbolicSamplingPolicy
+    assert tuple(getattr(policy, field.name) for field in fields(policy)) == (
+        "hyperbolic-sampling-policy-v1",
+        1,
+        2,
+        4_096,
+        8,
+        8,
+        32,
+        256,
+        256,
+    )
+    with pytest.raises(FrozenInstanceError):
+        policy.samples_per_pixel = 2  # type: ignore[misc]
+    assert not hasattr(policy, "__dict__")
+
 
 def test_engine_package_publishes_only_the_stage_13_entry_point() -> None:
     assert set(public_engine.__all__) == _EXPECTED_ENGINE_EXPORTS
@@ -321,7 +356,7 @@ def test_supported_formulas_records_the_completed_stage_13_contract() -> None:
         "<!-- LIMIT_FIELD_INDEX_END -->",
     )
 
-    assert "文档版本：stage-14b2-exact-line-sampling-v1" in document
+    assert "文档版本：stage-14d1-hyperbola-sampling-v1" in document
     assert "阶段 13A 至 13E 已完成" in status
     assert "analyze_plot_item" in document
     assert "LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec" in document

@@ -66,13 +66,72 @@ _OVAL_EXACT_LIVE_BIGINT_VALUES = (
     "comparison_cross_product_right",
     "outward_bound_cross_product",
 )
+_HYPERBOLA_SEGMENT_CAPACITY = 4
+_HYPERBOLA_PARAMETER_ROOT_CAPACITY = 12
+_HYPERBOLA_INTERVAL_CAPACITY = 4
+# Maximum simultaneously-live exact integers during HyperbolaSpec projection,
+# per-branch viewport comparisons, normalized residual evaluation, and the
+# final threshold comparison.  This is deliberately derived independently of
+# the oval liveness count: the two branch-local transverse bounds and the
+# monotone conjugate bounds remain live together while intervals are intersected.
+_HYPERBOLA_EXACT_LIVE_BIGINT_VALUES = (
+    "coefficient_a",
+    "coefficient_c",
+    "coefficient_d",
+    "coefficient_e",
+    "coefficient_f",
+    "center_x_numerator",
+    "center_x_denominator",
+    "center_y_numerator",
+    "center_y_denominator",
+    "transverse_square_numerator",
+    "transverse_square_denominator",
+    "conjugate_square_numerator",
+    "conjugate_square_denominator",
+    "transverse_lower_numerator",
+    "transverse_lower_denominator",
+    "transverse_upper_numerator",
+    "transverse_upper_denominator",
+    "conjugate_lower_numerator",
+    "conjugate_lower_denominator",
+    "conjugate_upper_numerator",
+    "conjugate_upper_denominator",
+    "transverse_lower_square_numerator",
+    "transverse_lower_square_denominator",
+    "transverse_upper_square_numerator",
+    "transverse_upper_square_denominator",
+    "lower_axis_comparison_left",
+    "lower_axis_comparison_right",
+    "upper_axis_comparison_left",
+    "upper_axis_comparison_right",
+    "float_x_numerator",
+    "float_x_denominator",
+    "float_y_numerator",
+    "float_y_denominator",
+    "x_square_numerator",
+    "x_square_denominator",
+    "y_square_numerator",
+    "y_square_denominator",
+    "term_a_numerator",
+    "term_c_numerator",
+    "term_d_numerator",
+    "term_e_numerator",
+    "polynomial_numerator",
+    "polynomial_denominator",
+    "scale_numerator",
+    "scale_denominator",
+    "residual_numerator",
+    "residual_denominator",
+    "comparison_cross_product_left",
+    "comparison_cross_product_right",
+)
 
 
-def _oval_exact_max_integer_bits(limits: ApplicationLimits) -> int:
-    """Return a conservative bit bound for every exact oval integer."""
+def _axis_aligned_conic_exact_max_integer_bits(limits: ApplicationLimits) -> int:
+    """Return a conservative bit bound for oval and hyperbola exact integers."""
 
     if type(limits) is not ApplicationLimits:
-        raise TypeError("oval exact bit bound requires exact ApplicationLimits.")
+        raise TypeError("conic exact bit bound requires exact ApplicationLimits.")
     limits.__post_init__()
 
     # A canonical coefficient has magnitude < 10**D.  Because 10 < 2**4,
@@ -83,14 +142,18 @@ def _oval_exact_max_integer_bits(limits: ApplicationLimits) -> int:
     float_ratio_bits = _FLOAT64_MAX_EXPONENT_MAGNITUDE + 1
 
     # center = -d/(2a) has numerator <= C and denominator <= C+1 bits.
-    # q = d**2*c + e**2*a - 4*a*c*f needs <= 3*C+3 bits, and an axis square
-    # q/(4*a**2*c) needs <= 3*C+3 bits in either reduced component.  Subtracting
+    # q = d**2*c + e**2*a - 4*a*c*f needs <= 3*C+3 numerator bits, while the
+    # axis-square denominator 4*a**2*c needs <= 3*C+2 bits.  The same formulas,
+    # with sign selected by the classified axis, cover HyperbolaSpec transverse
+    # and conjugate squares.  Subtracting
     # a float edge from a center produces numerator <= C+F+2 and denominator
     # <= C+F+1; squaring doubles those widths.  Fraction comparison then forms
-    # the two unreduced cross-products, whose larger side is bounded below.
+    # the two unreduced cross-products used by oval roots and by both hyperbola
+    # branch bounds, whose larger side is bounded below.
     outward_comparison_bits = 5 * coefficient_bits + 2 * float_ratio_bits + 6
 
-    # normalized_oval_residual squares two float ratios, multiplies by one
+    # Both normalized oval and hyperbola residuals square two float ratios,
+    # multiply by one
     # coefficient, sums five non-negative terms, and divides polynomial by
     # scale.  Aligning the shared power-of-two denominators can shift a term by
     # at most 2*F bits, so each five-term sum needs <= C+4*F+3 numerator bits
@@ -104,6 +167,12 @@ def _oval_exact_max_integer_bits(limits: ApplicationLimits) -> int:
         + _FLOAT64_EPSILON_DENOMINATOR_BITS
     )
     return max(outward_comparison_bits, normalized_residual_comparison_bits)
+
+
+def _oval_exact_max_integer_bits(limits: ApplicationLimits) -> int:
+    """Compatibility name for the shared axis-aligned-conic exact bit bound."""
+
+    return _axis_aligned_conic_exact_max_integer_bits(limits)
 
 
 def estimate_line_exact_workspace_bytes(limits: ApplicationLimits) -> int:
@@ -185,6 +254,17 @@ def estimate_oval_exact_workspace_bytes(limits: ApplicationLimits) -> int:
     ) // sys.int_info.bits_per_digit
     bytes_per_bigint = sys.getsizeof(0) + bigint_digits * sys.int_info.sizeof_digit
     return len(_OVAL_EXACT_LIVE_BIGINT_VALUES) * bytes_per_bigint
+
+
+def estimate_hyperbola_exact_workspace_bytes(limits: ApplicationLimits) -> int:
+    """Bound simultaneous Python integers used by exact hyperbola arithmetic."""
+
+    max_integer_bits = _axis_aligned_conic_exact_max_integer_bits(limits)
+    bigint_digits = (
+        max_integer_bits + sys.int_info.bits_per_digit - 1
+    ) // sys.int_info.bits_per_digit
+    bytes_per_bigint = sys.getsizeof(0) + bigint_digits * sys.int_info.sizeof_digit
+    return len(_HYPERBOLA_EXACT_LIVE_BIGINT_VALUES) * bytes_per_bigint
 
 
 def build_oval_parameterized_memory_budget(
@@ -272,6 +352,101 @@ def plan_oval_batch_size(
     )
     if minimum_budget.total_bytes > limits.max_estimated_memory_bytes:
         raise ValueError("oval budget cannot fit a one-point batch.")
+    one_point_batch_bytes = (
+        _FLOAT64_BYTES
+        + 2 * _FLOAT64_BYTES
+        + _BOOL_BYTES
+        + _FLOAT64_BYTES
+    )
+    available_growth = limits.max_estimated_memory_bytes - minimum_budget.total_bytes
+    return min(preferred, 1 + available_growth // one_point_batch_bytes)
+
+
+def build_hyperbola_parameterized_memory_budget(
+    *,
+    sample_count: int,
+    batch_size: int,
+    image_width: int,
+    image_height: int,
+    limits: ApplicationLimits,
+) -> ParameterizedRenderMemoryBudget:
+    """Return the single shared HyperbolaSpec budget used by Builder and sampler."""
+
+    for name, value in (
+        ("sample_count", sample_count),
+        ("batch_size", batch_size),
+        ("image_width", image_width),
+        ("image_height", image_height),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer.")
+        if value < 1:
+            raise ValueError(f"{name} must be positive.")
+    if batch_size > sample_count:
+        raise ValueError("batch_size must not exceed sample_count.")
+    if type(limits) is not ApplicationLimits:
+        raise TypeError("hyperbola budget requires exact ApplicationLimits.")
+    limits.__post_init__()
+
+    final_vector_bytes = sample_count * _FLOAT64_BYTES
+    exact_workspace_bytes = estimate_hyperbola_exact_workspace_bytes(limits)
+    interval_planning_bytes = (
+        _HYPERBOLA_PARAMETER_ROOT_CAPACITY * _FLOAT64_BYTES
+        + _HYPERBOLA_PARAMETER_ROOT_CAPACITY * _BOOL_BYTES
+        + _HYPERBOLA_INTERVAL_CAPACITY * 2 * _FLOAT64_BYTES
+    )
+    return ParameterizedRenderMemoryBudget(
+        final_x_bytes=final_vector_bytes,
+        final_y_bytes=final_vector_bytes,
+        artist_data_bytes=2 * final_vector_bytes,
+        segment_index_range_bytes=(
+            _HYPERBOLA_SEGMENT_CAPACITY * 2 * _INT64_BYTES
+        ),
+        segment_metadata_bytes=(
+            _HYPERBOLA_SEGMENT_CAPACITY * 2 * _INT64_BYTES
+        ),
+        parameter_batch_bytes=batch_size * _FLOAT64_BYTES,
+        transcendental_workspace_bytes=2 * batch_size * _FLOAT64_BYTES,
+        validation_workspace_bytes=(
+            exact_workspace_bytes
+            + interval_planning_bytes
+            + batch_size * _BOOL_BYTES
+            + batch_size * _FLOAT64_BYTES
+        ),
+        rgba_canvas_bytes=image_width * image_height * _RGBA_BYTES_PER_PIXEL,
+        png_buffer_reserve_bytes=limits.max_png_bytes,
+        png_copy_bytes=limits.max_png_bytes,
+    )
+
+
+def plan_hyperbola_batch_size(
+    *,
+    sample_count: int,
+    preferred_batch_points: int,
+    image_width: int,
+    image_height: int,
+    limits: ApplicationLimits,
+) -> int:
+    """Derive the largest allowed deterministic hyperbola batch."""
+
+    for name, value in (
+        ("sample_count", sample_count),
+        ("preferred_batch_points", preferred_batch_points),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer.")
+        if value < 1:
+            raise ValueError(f"{name} must be positive.")
+    preferred = min(sample_count, preferred_batch_points)
+    minimum_budget = build_hyperbola_parameterized_memory_budget(
+        sample_count=sample_count,
+        batch_size=1,
+        image_width=image_width,
+        image_height=image_height,
+        limits=limits,
+    )
+    if minimum_budget.total_bytes > limits.max_estimated_memory_bytes:
+        raise ValueError("hyperbola budget cannot fit a one-point batch.")
     one_point_batch_bytes = (
         _FLOAT64_BYTES
         + 2 * _FLOAT64_BYTES
