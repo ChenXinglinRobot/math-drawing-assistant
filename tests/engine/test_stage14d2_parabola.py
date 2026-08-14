@@ -7,6 +7,7 @@ from fractions import Fraction
 from inspect import signature
 from math import ceil, hypot, isfinite
 from pathlib import Path
+import sys
 
 import numpy as np
 import pytest
@@ -29,6 +30,7 @@ from math_drawing_assistant.engine.parameterized_budget import (
     _PARABOLA_INTERVAL_EXACT_LIVE_BIGINT_VALUES,
     _PARABOLA_RESIDUAL_EXACT_LIVE_BIGINT_VALUES,
     _axis_aligned_conic_exact_max_integer_bits,
+    _parabola_exact_max_integer_bits,
     build_parabola_parameterized_memory_budget,
     estimate_parabola_exact_workspace_bytes,
     plan_parabola_batch_size,
@@ -131,6 +133,62 @@ def _intervals(plan: RenderPlan) -> tuple[ParameterIntervalPlan, ...]:
     assert type(plan.item_plan) is GeometryRenderItemPlan
     assert all(type(value) is ParameterIntervalPlan for value in plan.item_plan.segments)
     return plan.item_plan.segments  # type: ignore[return-value]
+
+
+def _independent_parabola_interval_cross_product_bits(
+    *,
+    vertex_x: Fraction,
+    vertex_y: Fraction,
+    focal_parameter: Fraction,
+    viewport: ResolvedViewport,
+) -> int:
+    """Measure interval/root comparison products without calling the planner."""
+
+    cross_edges = (
+        Fraction.from_float(viewport.x_min),
+        Fraction.from_float(viewport.x_max),
+    )
+    axis_edges = (
+        Fraction.from_float(viewport.y_min),
+        Fraction.from_float(viewport.y_max),
+    )
+    rational_bounds = tuple(
+        (edge - vertex_x) / (2 * focal_parameter) for edge in cross_edges
+    )
+    root_squared_bounds = tuple(
+        (edge - vertex_y) / focal_parameter for edge in axis_edges
+    )
+
+    product_widths: list[int] = []
+    for rational in rational_bounds:
+        rational_squared = rational * rational
+        for root_squared in root_squared_bounds:
+            if root_squared <= 0:
+                continue
+            comparison_left = (
+                rational_squared.numerator * root_squared.denominator
+            )
+            comparison_right = (
+                root_squared.numerator * rational_squared.denominator
+            )
+            product_widths.extend(
+                (
+                    abs(comparison_left).bit_length(),
+                    abs(comparison_right).bit_length(),
+                ),
+            )
+    assert product_widths
+    return max(product_widths)
+
+
+def _runtime_bigint_workspace_bytes(max_integer_bits: int, live_count: int) -> int:
+    bigint_digits = (
+        max_integer_bits + sys.int_info.bits_per_digit - 1
+    ) // sys.int_info.bits_per_digit
+    bytes_per_bigint = (
+        sys.getsizeof(0) + bigint_digits * sys.int_info.sizeof_digit
+    )
+    return live_count * bytes_per_bigint
 
 
 def test_parabolic_policy_is_exact_frozen_slots_v1_and_public_identity() -> None:
@@ -396,10 +454,68 @@ def test_parabola_exact_workspace_has_named_liveness_and_proven_bound() -> None:
     assert len(_PARABOLA_INTERVAL_EXACT_LIVE_BIGINT_VALUES) == 31
     assert len(_PARABOLA_RESIDUAL_EXACT_LIVE_BIGINT_VALUES) == 27
     assert len(set(_PARABOLA_INTERVAL_EXACT_LIVE_BIGINT_VALUES)) == 31
-    assert _axis_aligned_conic_exact_max_integer_bits(DEFAULT_LIMITS) > 0
-    assert 0 < estimate_parabola_exact_workspace_bytes(DEFAULT_LIMITS) < (
+    coefficient_bits = 4 * DEFAULT_LIMITS.max_equation_canonical_coefficient_digits
+    float_ratio_bits = 1_075
+    interval_root_bits = 6 * coefficient_bits + 3 * float_ratio_bits + 5
+    residual_bits = coefficient_bits + 6 * float_ratio_bits + 56
+    assert interval_root_bits == 21_662
+    assert residual_bits == 9_578
+    assert _parabola_exact_max_integer_bits(DEFAULT_LIMITS) == max(
+        interval_root_bits,
+        residual_bits,
+    )
+    assert estimate_parabola_exact_workspace_bytes(DEFAULT_LIMITS) == (
+        _runtime_bigint_workspace_bytes(interval_root_bits, 31)
+    )
+    assert estimate_parabola_exact_workspace_bytes(DEFAULT_LIMITS) < (
         DEFAULT_LIMITS.max_viewport_probe_bytes
     )
+
+
+def test_parabola_exact_bound_covers_extreme_interval_comparison_witness() -> None:
+    canonical_digits = 768
+    canonical_ceiling = 10**canonical_digits
+    vertex_x = Fraction(canonical_ceiling - 1, canonical_ceiling - 3)
+    vertex_y = Fraction(1, canonical_ceiling - 7)
+    focal_parameter = Fraction(canonical_ceiling - 9, canonical_ceiling - 11)
+    for value in (vertex_x, vertex_y, focal_parameter):
+        assert abs(value.numerator) < canonical_ceiling
+        assert value.denominator < canonical_ceiling
+
+    viewport = _viewport(
+        x_min=5e-324,
+        x_max=1.7976931348623157e308,
+        y_min=5e-324,
+        y_max=1.7976931348623157e308,
+    )
+    witness_bits = _independent_parabola_interval_cross_product_bits(
+        vertex_x=vertex_x,
+        vertex_y=vertex_y,
+        focal_parameter=focal_parameter,
+        viewport=viewport,
+    )
+    old_axis_aligned_bound = _axis_aligned_conic_exact_max_integer_bits(
+        DEFAULT_LIMITS,
+    )
+    parabola_bound = _parabola_exact_max_integer_bits(DEFAULT_LIMITS)
+    assert witness_bits == 18_530
+    assert old_axis_aligned_bound == 17_516
+    assert old_axis_aligned_bound < witness_bits <= parabola_bound
+
+
+def test_parabola_exact_bound_and_estimator_are_monotonic_for_custom_digits() -> None:
+    custom_limits = replace(
+        DEFAULT_LIMITS,
+        max_equation_canonical_coefficient_digits=1_024,
+    )
+    default_bound = _parabola_exact_max_integer_bits(DEFAULT_LIMITS)
+    custom_bound = _parabola_exact_max_integer_bits(custom_limits)
+    assert custom_bound == 6 * (4 * 1_024) + 3 * 1_075 + 5
+    assert custom_bound > default_bound
+
+    custom_workspace = estimate_parabola_exact_workspace_bytes(custom_limits)
+    assert custom_workspace == _runtime_bigint_workspace_bytes(custom_bound, 31)
+    assert custom_workspace > estimate_parabola_exact_workspace_bytes(DEFAULT_LIMITS)
 
 
 def test_parabola_budget_fields_and_zero_transcendental_workspace_are_exact() -> None:

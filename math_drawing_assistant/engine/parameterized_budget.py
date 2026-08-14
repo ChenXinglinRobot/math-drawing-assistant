@@ -245,6 +245,44 @@ def _oval_exact_max_integer_bits(limits: ApplicationLimits) -> int:
     return _axis_aligned_conic_exact_max_integer_bits(limits)
 
 
+def _parabola_exact_max_integer_bits(limits: ApplicationLimits) -> int:
+    """Return a conservative bit bound for all exact parabola integers."""
+
+    if type(limits) is not ApplicationLimits:
+        raise TypeError("parabola exact bit bound requires exact ApplicationLimits.")
+    limits.__post_init__()
+
+    # A canonical Fraction component needs at most C=4*D bits, and a finite
+    # float64 Fraction component needs at most F=1,075 bits.  For an edge e,
+    # vertex v, and focal parameter p, e-v has numerator/denominator widths at
+    # most C+F+1/C+F.  Dividing by 2p gives each component of the rational
+    # parameter r at most 2*C+F+1 bits; q=(axis_edge-v)/p obeys the same uniform
+    # component bound.  Thus r**2 uses at most 4*C+2*F+2 bits per component and
+    # its unreduced comparison cross-products with q need at most
+    # 6*C+3*F+3 bits.  The published +5 bound keeps two further conservative
+    # bits without using an empirical multiplier.
+    coefficient_bits = 4 * limits.max_equation_canonical_coefficient_digits
+    float_ratio_bits = _FLOAT64_MAX_EXPONENT_MAGNITUDE + 1
+    interval_root_comparison_bits = (
+        6 * coefficient_bits + 3 * float_ratio_bits + 5
+    )
+
+    # The primitive normalized residual has the same five-term coefficient and
+    # float-ratio structure as the axis-aligned conics: polynomial/scale needs
+    # at most C+6*F+3 bits, and comparison with an integer multiple of 2**-52
+    # adds at most the 53-bit epsilon denominator.
+    normalized_residual_comparison_bits = (
+        coefficient_bits
+        + 6 * float_ratio_bits
+        + 3
+        + _FLOAT64_EPSILON_DENOMINATOR_BITS
+    )
+    return max(
+        interval_root_comparison_bits,
+        normalized_residual_comparison_bits,
+    )
+
+
 def estimate_line_exact_workspace_bytes(limits: ApplicationLimits) -> int:
     """Bound the temporary Python integers used by exact line arithmetic."""
 
@@ -340,12 +378,7 @@ def estimate_hyperbola_exact_workspace_bytes(limits: ApplicationLimits) -> int:
 def estimate_parabola_exact_workspace_bytes(limits: ApplicationLimits) -> int:
     """Bound simultaneous Python integers used by exact parabola arithmetic."""
 
-    # The shared bound covers the parabola as well: its vertex and focal parameter
-    # use no wider products than the center/axis-square construction, while
-    # (edge-vertex)/(2p), (axis-edge)/p, rational-vs-sqrt(q) comparisons, and the
-    # primitive normalized residual are bounded respectively by the existing
-    # 5*C+2*F+6 and C+6*F+56 terms.  No empirical multiplier is used.
-    max_integer_bits = _axis_aligned_conic_exact_max_integer_bits(limits)
+    max_integer_bits = _parabola_exact_max_integer_bits(limits)
     bigint_digits = (
         max_integer_bits + sys.int_info.bits_per_digit - 1
     ) // sys.int_info.bits_per_digit
