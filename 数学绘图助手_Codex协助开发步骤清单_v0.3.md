@@ -294,13 +294,13 @@ docs/supported-formulas.md
 
 ### 阶段 15：M1.5 渲染整合、回归与性能基准
 
-状态：未开始。Stage 14 出口已通过，允许按独立任务进入本阶段；本登记不表示已实施 renderer、Actor、UI、正式性能或真实教材验收。
+状态：Stage 15-0“入口收口与执行章程”已完成文档冻结，15A 尚未开始，Stage 15 实施仍未开始。Stage 14 出口已通过；后续必须按 `docs/stage-15-execution-charter.md` 的 15A→15B→15C→15D→15E→15F→15G 独立门禁逐步执行，不得合并、跳过或自动进入下一步。本登记不表示已实施 renderer、Actor、UI、正式性能或真实教材验收。
 
 目标：完成直线、圆与圆锥曲线的单项场景闭环。
 
-允许修改：renderer、AppController/UI、Actor 适配、回归测试、supported-formulas、architecture/decisions、基准和人工清单。
+允许修改：不再使用本段概括作为文件授权。每个子步的逐文件 literal-path 写入 allowlist、只读依赖、新测试、教材证据、人工清单、性能协议/工具/固定结果文件、独立审核和 completion report 均以 `docs/stage-15-execution-charter.md` 为唯一执行章程。
 
-任务：同一 Scene/Plan/Actor 链路；显示确定类型、规范化方程、不可见失败以及裁切/精度警告；圆锥曲线默认 equal，用户明确比例优先；失败保留旧图；沿用阶段 12 测量协议，若修改必须记录理由和可比性；依据 M1/M1.5 基准在 M1.6 开始前冻结场景项目数及总资源限制到配置和 supported-formulas。
+任务：同一 Scene/Plan/Actor 链路；显示确定类型、规范化方程、不可见失败以及裁切/精度警告；圆锥曲线默认 equal，用户明确比例优先；失败保留旧图；沿用阶段 12 测量协议，若修改必须记录理由和可比性；先由 15E 稳定真实教材产品矩阵，再由 15F 冻结协议并运行正式测量；依据 M1/M1.5 基准在 M1.6 开始前冻结场景项目数及总资源限制到配置和 supported-formulas。不得仅为 15E→15F 顺序创建正式决策编号。
 
 自动测试：阶段 13/14 全矩阵、M1 回归、Actor 回归、单位比例、资源预算和原子单项结果。
 

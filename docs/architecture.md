@@ -2,7 +2,7 @@
 
 版本：v0.1  
 最后更新：2026-08-15
-状态：实施中的架构基线（Stage 14E 跨类型最终验收已通过，P0-06 已关闭，Stage 14 已完成；Stage 15、geometry renderer 与应用整合尚未实施）
+状态：实施中的架构基线（Stage 14E 跨类型最终验收已通过，P0-06 已关闭，Stage 14 已完成；Stage 15-0 执行章程已冻结，15A 与 Stage 15 实施尚未开始）
 
 ## 1. 文档职责与事实来源
 
@@ -385,6 +385,20 @@ Stage 14E 以直线、圆、椭圆、双曲线、抛物线和既有 M1 显函数
 参数化开发探针 `stage14-parameterized-prototype-v1` 只测量 `analyze_plot_item → resolve_single_item_viewport → RenderPlanBuilder.build → sample_parameterized_curve`。14 个固定场景、每场景 1 次预热和 5 次保留测量全部成功；原始总耗时范围为 0.9235–70.9235 ms，最大获批总内存预算为 69,301,000 bytes。该数据只证明当前开发机上的 Stage 14 原型可执行、可预算且明显低于两秒筛查线；不包含 renderer、Actor、PNG、GUI、preview 或 copy，不计算或宣称正式 P50/P95，也不构成 M1.5 性能验收。
 
 据跨类型测试、静态边界和确定性证据包，P0-06 于 2026-08-15 关闭，Stage 14 完成并允许进入 Stage 15。Stage 15、geometry renderer、`SceneRenderExecutor`、Actor、Controller、UI、多 item、contour 后备链路、P0-07、真实教材矩阵和 M1.5 checkpoint 仍未实施或完成。
+
+### 7.9 Stage 15-0 预实施冻结
+
+Stage 15 的执行顺序、精确文件边界和证据门统一见 `docs/stage-15-execution-charter.md`。15-0 只完成文档与裁定，不表示 15A 已开始。以下跨层契约在 15A 前冻结：
+
+* `PlotKind` 保持 `AUTO | EXPLICIT_FUNCTION | LINE_EQUATION | CONIC_EQUATION` 的粗粒度路由语义；15B 另以正交、封闭的结果类型信息表达直线、圆、椭圆、双曲线和抛物线，具体公共命名由 15B 审核；
+* `PlotItemResult` 在 15B 补齐既有 §5.5 已要求的可见片段元数据，以及必要采样规模和资源诊断；不得提前加入 Stage 18/19 的 `cache_hit`、`fingerprint` 或同义字段；
+* 15D 的 UI 比例选择为“按图形默认/自动/等比例”三态，分别映射 exact `AspectRequest.DEFAULT/AUTO/EQUAL`；DEFAULT 的现有 resolver 映射保持不变，用户显式覆盖优先；
+* `viewport_clipped` 与 `sampling_precision_limited` 是成功结果上的非阻塞通知，必须持续、可访问地显示中文提示，不得把任务显示为失败或禁用复制；完全不可见才失败；
+* 15F 正式峰值内存采用覆盖 NumPy、Matplotlib、Qt 原生分配的进程级/操作系统级主口径；`tracemalloc` 仅为辅助诊断；
+* 当前 `ApplicationLimits.status` 是全局两态，不能用局部 M1.5 性能证据把输入安全限制整体标为 `BENCHMARK_FROZEN`。15F 必须先解决状态粒度，再冻结有证据的场景或资源子集；
+* 15E 产品矩阵必须先于 15F 协议和测量，因为正式场景只能来自已通过 production executor 的稳定矩阵。该工程顺序不单独创建正式决策编号；只有长期产品或架构变化才更新 `docs/decisions.md`。
+
+15A–15G 每步都必须独立完成定向测试、全量回归、公开 API 哨兵、文档同步、只读独立审核和 completion report，然后停止等待验收，不自动进入下一步。
 
 ## 8. RenderActor 并发模型
 
