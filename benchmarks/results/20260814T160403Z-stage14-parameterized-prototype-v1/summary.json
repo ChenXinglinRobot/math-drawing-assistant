@@ -1,0 +1,317 @@
+{
+  "boundary_statements": [
+    "Only the direct analyzer/resolver/RenderPlanBuilder/parameterized-sampler chain is measured.",
+    "Actor, renderer, PNG, GUI, preview, and copy are excluded.",
+    "Results from this machine are development references only.",
+    "A result below two seconds is only necessary Stage 15 screening evidence, not M1.5 performance acceptance.",
+    "No formal P50 or P95 is calculated or claimed by this prototype."
+  ],
+  "formal_percentiles_computed": false,
+  "overall": {
+    "below_two_second_development_screen": true,
+    "maximum_total_elapsed_ns": 70923500,
+    "measurement_count": 70,
+    "minimum_total_elapsed_ns": 923500,
+    "raw_total_elapsed_ns": [
+      994700,
+      941900,
+      923500,
+      937300,
+      937200,
+      1714000,
+      1560800,
+      1571400,
+      1672500,
+      1685300,
+      54424600,
+      55790300,
+      53829600,
+      58042300,
+      56612700,
+      54407900,
+      57225100,
+      55160500,
+      54313400,
+      55708200,
+      51146500,
+      55012200,
+      49755100,
+      51456900,
+      50815100,
+      54190000,
+      54517400,
+      55590900,
+      55344900,
+      56553900,
+      60208000,
+      63054900,
+      63551500,
+      65682400,
+      63884200,
+      67569200,
+      67611800,
+      66833700,
+      63602200,
+      63998800,
+      68254900,
+      70923500,
+      66659100,
+      65805000,
+      67727800,
+      44518500,
+      45643800,
+      44411100,
+      42750100,
+      45255400,
+      48431800,
+      44929000,
+      47113700,
+      41983000,
+      43688400,
+      54929200,
+      54106000,
+      53505000,
+      55507900,
+      52976800,
+      55068100,
+      56326400,
+      55100800,
+      57648000,
+      56897100,
+      41258800,
+      41561800,
+      41926000,
+      42453100,
+      39374100
+    ],
+    "success_count": 70,
+    "typed_failure_count": 0
+  },
+  "protocol_version": "stage14-parameterized-prototype-v1",
+  "scenarios": [
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 994700,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 923500,
+      "raw_total_elapsed_ns": [
+        994700,
+        941900,
+        923500,
+        937300,
+        937200
+      ],
+      "scenario_name": "line-vertical",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 1714000,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 1560800,
+      "raw_total_elapsed_ns": [
+        1714000,
+        1560800,
+        1571400,
+        1672500,
+        1685300
+      ],
+      "scenario_name": "line-general",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 58042300,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 53829600,
+      "raw_total_elapsed_ns": [
+        54424600,
+        55790300,
+        53829600,
+        58042300,
+        56612700
+      ],
+      "scenario_name": "circle-origin",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 57225100,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 54313400,
+      "raw_total_elapsed_ns": [
+        54407900,
+        57225100,
+        55160500,
+        54313400,
+        55708200
+      ],
+      "scenario_name": "circle-translated",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 55012200,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 49755100,
+      "raw_total_elapsed_ns": [
+        51146500,
+        55012200,
+        49755100,
+        51456900,
+        50815100
+      ],
+      "scenario_name": "ellipse-origin",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 56553900,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 54190000,
+      "raw_total_elapsed_ns": [
+        54190000,
+        54517400,
+        55590900,
+        55344900,
+        56553900
+      ],
+      "scenario_name": "ellipse-translated",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 65682400,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 60208000,
+      "raw_total_elapsed_ns": [
+        60208000,
+        63054900,
+        63551500,
+        65682400,
+        63884200
+      ],
+      "scenario_name": "hyperbola-horizontal",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 67611800,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 63602200,
+      "raw_total_elapsed_ns": [
+        67569200,
+        67611800,
+        66833700,
+        63602200,
+        63998800
+      ],
+      "scenario_name": "hyperbola-vertical",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 70923500,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 65805000,
+      "raw_total_elapsed_ns": [
+        68254900,
+        70923500,
+        66659100,
+        65805000,
+        67727800
+      ],
+      "scenario_name": "hyperbola-one-branch-split",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 45643800,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 42750100,
+      "raw_total_elapsed_ns": [
+        44518500,
+        45643800,
+        44411100,
+        42750100,
+        45255400
+      ],
+      "scenario_name": "parabola-up",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 48431800,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 41983000,
+      "raw_total_elapsed_ns": [
+        48431800,
+        44929000,
+        47113700,
+        41983000,
+        43688400
+      ],
+      "scenario_name": "parabola-down",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 55507900,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 52976800,
+      "raw_total_elapsed_ns": [
+        54929200,
+        54106000,
+        53505000,
+        55507900,
+        52976800
+      ],
+      "scenario_name": "parabola-right",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 57648000,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 55068100,
+      "raw_total_elapsed_ns": [
+        55068100,
+        56326400,
+        55100800,
+        57648000,
+        56897100
+      ],
+      "scenario_name": "parabola-left",
+      "success_count": 5,
+      "typed_failure_count": 0
+    },
+    {
+      "below_two_second_development_screen": true,
+      "maximum_total_elapsed_ns": 42453100,
+      "measurement_count": 5,
+      "minimum_total_elapsed_ns": 39374100,
+      "raw_total_elapsed_ns": [
+        41258800,
+        41561800,
+        41926000,
+        42453100,
+        39374100
+      ],
+      "scenario_name": "parabola-vertex-excluded-two-segments",
+      "success_count": 5,
+      "typed_failure_count": 0
+    }
+  ]
+}

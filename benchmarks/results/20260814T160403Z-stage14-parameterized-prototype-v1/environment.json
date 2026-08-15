@@ -1,0 +1,14 @@
+{
+  "generated_at_utc": "2026-08-14T16:04:03.566533Z",
+  "git_commit": "ec11449fb4a45beec639a6807c96dc9205389b2c",
+  "machine": "AMD64",
+  "numpy_version": "2.5.1",
+  "os": "Windows",
+  "os_release": "11",
+  "os_version": "10.0.26200",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 170 Stepping 4, GenuineIntel",
+  "protocol_version": "stage14-parameterized-prototype-v1",
+  "python_implementation": "CPython",
+  "python_version": "3.12.11"
+}

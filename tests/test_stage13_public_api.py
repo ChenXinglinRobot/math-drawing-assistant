@@ -387,12 +387,13 @@ def test_supported_formulas_records_the_completed_stage_13_contract() -> None:
         "<!-- LIMIT_FIELD_INDEX_END -->",
     )
 
-    assert "文档版本：stage-14d2-parabola-sampling-v1" in document
+    assert "文档版本：stage-14e-final-acceptance-v1" in document
     assert "阶段 13A 至 13E 已完成" in status
     assert "analyze_plot_item" in document
     assert "LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec" in document
-    assert "未接入 `SceneRenderExecutor`、viewport、sampling、render 或 UI" in status
-    assert "阶段 14/15 仍未完成" in status
+    assert "Stage 14 已在后续完成" in status
+    assert "仍未接入 geometry renderer、`SceneRenderExecutor`、Actor、Controller 或 UI" in status
+    assert "Stage 15 仍未完成" in status
 
     assert "消费者尚未实现" not in limits_index
     for row in (

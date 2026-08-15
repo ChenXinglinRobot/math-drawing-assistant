@@ -280,6 +280,8 @@ docs/supported-formulas.md
 
 ### 阶段 14：参数化直线和圆锥曲线采样
 
+状态：已完成（2026-08-15）。Stage 14E 跨类型验收、独立数值对照、确定性开发机探针和静态 contour/架构边界均通过；P0-06 已关闭。证据见 `docs/audits/stage-14-final-acceptance-2026-08-14.md` 与 `benchmarks/results/20260814T160403Z-stage14-parameterized-prototype-v1/`。
+
 目标：在有限视口内产生正确、可预算的几何分支。
 
 允许修改：typed samplers 的 line/conic 实现、RenderPlan/预算、limits 和测试。
@@ -291,6 +293,8 @@ docs/supported-formulas.md
 人工/原型：与教材样例和独立数值对照核验；二维 contour 只可作为诊断对照，不进入主链路。关闭 `联网确认.md` P0-06；原型未通过则阶段 14 不通过，也不得切换为未决的 contour 正式方案。
 
 ### 阶段 15：M1.5 渲染整合、回归与性能基准
+
+状态：未开始。Stage 14 出口已通过，允许按独立任务进入本阶段；本登记不表示已实施 renderer、Actor、UI、正式性能或真实教材验收。
 
 目标：完成直线、圆与圆锥曲线的单项场景闭环。
 

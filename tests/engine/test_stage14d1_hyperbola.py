@@ -956,22 +956,29 @@ def test_sampler_rejects_nonfinite_batch_and_float64_segment_collapse(
     assert collapsed.code is ErrorCode.NUMERIC_RANGE_UNSUPPORTED
 
 
-class _CancelOnPoll:
-    def __init__(self, target: int) -> None:
-        self.target = target
+class _CountingProbe:
+    def __init__(self, cancel_on: int | None = None) -> None:
+        self.cancel_on = cancel_on
         self.count = 0
 
     def is_cancelled(self) -> bool:
         self.count += 1
-        return self.count == self.target
+        return self.cancel_on is not None and self.count >= self.cancel_on
 
 
-@pytest.mark.parametrize("target", [1, 2, 3, 4, 5, 6, 8, 10, 12, 14])
-def test_hyperbola_sampler_cooperative_cancellation_checkpoints(target: int) -> None:
-    probe = _CancelOnPoll(target)
-    result = sample_parameterized_curve(_approved(), cancellation_probe=probe)
-    assert type(result) is SamplingCancelled
-    assert probe.count == target
+def test_every_reached_hyperbola_cancellation_checkpoint_is_neutral() -> None:
+    plan = _approved()
+    counter = _CountingProbe()
+    successful = sample_parameterized_curve(plan, cancellation_probe=counter)
+    assert type(successful) is SampledParameterizedCurve
+    assert counter.count >= 25
+    item_id = plan.scene_spec.items[0].item_id
+    for target in range(1, counter.count + 1):
+        probe = _CountingProbe(cancel_on=target)
+        result = sample_parameterized_curve(plan, cancellation_probe=probe)
+        assert type(result) is SamplingCancelled
+        assert result.item_id == item_id
+        assert probe.count == target
 
 
 def test_sampler_does_not_reenter_resolver_builder_or_interval_planner(

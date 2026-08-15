@@ -1,8 +1,8 @@
 # 数学绘图助手：架构约束
 
 版本：v0.1  
-最后更新：2026-08-09
-状态：实施中的架构基线（Stage 14B-2 已实现 exact 一般直线；Stage 14C 已实现圆/椭圆；Stage 14D-1 已实现双曲线；Stage 14D-2 已在同一审批链路实现四向平移抛物线的有限可见区间与安全参数化采样；Stage 14E、Stage 15 及应用整合尚未实施）
+最后更新：2026-08-15
+状态：实施中的架构基线（Stage 14E 跨类型最终验收已通过，P0-06 已关闭，Stage 14 已完成；Stage 15、geometry renderer 与应用整合尚未实施）
 
 ## 1. 文档职责与事实来源
 
@@ -294,7 +294,7 @@ M1.5 支持的图形、方程、精确系数、隐式乘法继承、M1 路由和
 
 通用二维 contour 不是受限直线/圆锥曲线的默认主实现。它只可作为诊断对照或未来任意隐式曲线方案的独立原型，不能绕过当前 OUT 范围。
 
-### 7.4 Stage 14B/14C/14D-1/14D-2 公共契约、参数化原型与阶段边界
+### 7.4 Stage 14B/14C/14D-1/14D-2/14E 公共契约、参数化原型与阶段边界
 
 Stage 14B-1 把既有 M1 显函数链路扩展为可容纳 Stage 13 六种 exact Spec 的统一公共边界；Stage 14B-2 在该边界内放行 exact、非退化 `LineSpec`；Stage 14C 沿用同一边界放行 `CircleSpec | EllipseSpec`；Stage 14D-1 放行 `HyperbolaSpec`；Stage 14D-2 继续沿用同一边界放行 `ParabolaSpec`。正式单项数据流固定为：
 
@@ -378,7 +378,13 @@ Stage 14D-2 固定抛物线只有一个数学分支 `branch_id=0`，最多两个
 
 sampler 在首个输出数组分配前重投影 geometry、逐字段重算预算并复验 receipt/limits，只消费已批准 interval。每个区间使用绝对样本索引的 `j/(N-1)` 并显式固定两端点；逐点以 primitive equation 和 `Fraction.from_float` 计算 normalized residual。超过 256 ULP typed 拒绝，32–256 ULP 成功并报告 `SAMPLING_PRECISION_LIMITED`；曲线无界，因此所有成功结果报告一次 `VIEWPORT_CLIPPED`，计数为实际成功 segment 数。x/y/ranges 自有只读，取消不保留部分结果。
 
-Stage 14D-2 没有升级 RenderPlan、parameterized sampler 或 limits version，也没有新增第二套 resolver、receipt 或公开 sampler。Stage 14E、几何 renderer、`SceneRenderExecutor`、Actor、Controller、UI、contour 后备链路与多 item 仍未接入。P0-06 保持打开；这只表示 14D-2 完成，不表示 Stage 14、Stage 15 或 M1.5 完成，也未进入 Stage 15。
+Stage 14D-2 没有升级 RenderPlan、parameterized sampler 或 limits version，也没有新增第二套 resolver、receipt 或公开 sampler。
+
+Stage 14E 以直线、圆、椭圆、双曲线、抛物线和既有 M1 显函数组成跨类型矩阵，复验同一 analyzer/resolver/Builder/receipt/sampler 边界、AUTO_GEOMETRY、aspect、segment topology、预算、只读数组、snapshot、warning/error、receipt 篡改、极端合法输入、无可见曲线和合作取消。独立 `Fraction.from_float` 数值 oracle 不调用生产 normalized residual、projector 或 planner；静态边界检查确认生产采样路径未导入 contour、未重入 resolver/Builder/interval planner，也未把几何类型接入 renderer、`SceneRenderExecutor`、Actor、Controller、UI 或新的公开流水线。
+
+参数化开发探针 `stage14-parameterized-prototype-v1` 只测量 `analyze_plot_item → resolve_single_item_viewport → RenderPlanBuilder.build → sample_parameterized_curve`。14 个固定场景、每场景 1 次预热和 5 次保留测量全部成功；原始总耗时范围为 0.9235–70.9235 ms，最大获批总内存预算为 69,301,000 bytes。该数据只证明当前开发机上的 Stage 14 原型可执行、可预算且明显低于两秒筛查线；不包含 renderer、Actor、PNG、GUI、preview 或 copy，不计算或宣称正式 P50/P95，也不构成 M1.5 性能验收。
+
+据跨类型测试、静态边界和确定性证据包，P0-06 于 2026-08-15 关闭，Stage 14 完成并允许进入 Stage 15。Stage 15、geometry renderer、`SceneRenderExecutor`、Actor、Controller、UI、多 item、contour 后备链路、P0-07、真实教材矩阵和 M1.5 checkpoint 仍未实施或完成。
 
 ## 8. RenderActor 并发模型
 

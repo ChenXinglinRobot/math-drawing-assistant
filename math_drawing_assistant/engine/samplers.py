@@ -548,7 +548,7 @@ def sample_parameterized_curve(
     *,
     cancellation_probe: CancellationProbe | None = None,
 ) -> SamplingOutcome:
-    """Sample the sole approved line, circle, or ellipse geometry plan."""
+    """Sample the sole approved parameterized geometry plan."""
 
     # Approval is intentionally the first operation at this public boundary.
     try:

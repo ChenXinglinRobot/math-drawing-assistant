@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
-文档版本：stage-14d2-parabola-sampling-v1
-状态：阶段 13A 至 13E 已完成；Stage 14B-2 已实现 exact 一般直线，Stage 14C 已实现圆与椭圆，Stage 14D-1 已实现双曲线，Stage 14D-2 已在同一单项 viewport/Builder/receipt/sampler 边界实现四向平移抛物线、最多两个有限可见参数区间与安全参数化采样。Stage 14E、geometry renderer 与应用整合仍未实现；P0-06、Stage 14/15 和核心 MVP 均未完成。
+文档版本：stage-14e-final-acceptance-v1
+状态：阶段 13A 至 13E 与 Stage 14B 至 14E 已完成；直线、圆、椭圆、双曲线和四向平移抛物线已在同一单项 viewport/Builder/receipt/sampler 边界通过跨类型最终验收。P0-06 已关闭，Stage 14 已完成并允许进入 Stage 15；geometry renderer、应用整合、P0-07、Stage 15 和核心 MVP 仍未完成。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
@@ -38,7 +38,7 @@ PlotItemRequest
 → PlotItemSpec | ErrorInfo
 ```
 
-`analyze_plot_item` 是阶段 13 的正式单项分析边界：它不生成 `PlotSceneSpec`，不计算 viewport，也不执行 sampling 或 render。`SceneRenderExecutor` 继续只承载既有 M1 下游行为；equation Spec 的后续数值、采样与渲染能力属于尚未完成的阶段 14/15。阶段 6/7 的规范化、词法化、SourceMap、AST 和既有显函数 validation 语义不变，也不导入 SymPy 或执行数值求值、常量折叠、化简、展开、移项或求解。
+`analyze_plot_item` 是阶段 13 的正式单项分析边界：它不生成 `PlotSceneSpec`，不计算 viewport，也不执行 sampling 或 render。equation Spec 的 viewport、数值规划与参数化采样原型已由 Stage 14 完成，但尚未接入 `SceneRenderExecutor`；正式 geometry 渲染与应用整合属于尚未完成的 Stage 15。阶段 6/7 的规范化、词法化、SourceMap、AST 和既有显函数 validation 语义不变，也不导入 SymPy 或执行数值求值、常量折叠、化简、展开、移项或求解。
 
 ## 字符与 token 白名单
 
@@ -730,7 +730,7 @@ NumericExecutionCost.max_live_float64_vectors
 ## M1.5 阶段 13 已实现范围
 
 <!-- STAGE_13_STATUS_START -->
-阶段 13A 至 13E 已完成。`analyze_plot_item` 是 M1.5 正式的单项 request-level 分析入口；既有 `analyze_explicit_function`、`classify_plot` 和 `ValidatedExplicitExpression` 保持兼容。阶段 13 不生成 `PlotSceneSpec`，也未接入 `SceneRenderExecutor`、viewport、sampling、render 或 UI；阶段 14/15 仍未完成，核心 MVP 也未因阶段 13 而完成。
+阶段 13A 至 13E 已完成。`analyze_plot_item` 是 M1.5 正式的单项 request-level 分析入口；既有 `analyze_explicit_function`、`classify_plot` 和 `ValidatedExplicitExpression` 保持兼容。阶段 13 本身不生成 `PlotSceneSpec`；Stage 14 已在后续完成 typed spec → `PlotSceneSpec` → viewport/Builder/receipt/sampling 原型，但仍未接入 geometry renderer、`SceneRenderExecutor`、Actor、Controller 或 UI。Stage 15 仍未完成，核心 MVP 也未因阶段 13/14 而完成。
 <!-- STAGE_13_STATUS_END -->
 
 当前实现接受仅含有理系数、总次数为 1 或 2 的方程，并以 bounded exact arithmetic 归一化为 primitive integer coefficients。它通过 typed `PlotKind` 路由交付下列非退化 Spec：一般直线 `LineSpec`，以及轴向平行的 `CircleSpec`、`EllipseSpec`、`HyperbolaSpec` 和 `ParabolaSpec`。
@@ -768,7 +768,7 @@ NumericExecutionCost.max_live_float64_vectors
 
 变量零次幂不新增 `variable_zero_exponent`，exact arithmetic 资源超限不新增 `equation_normalization_limit_exceeded`，仍分别使用 `unsupported_equation` 与 `resource_limit_exceeded`。当多个非法结构重叠时，bounded polynomial traversal 按既有子节点访问顺序立即传播错误；这只决定先报告哪个错误，不改变输入被拒绝的事实。阶段 13E 不修改该 traversal。
 
-## Stage 14B/14C/14D-1/14D-2 公共契约与正式参数化原型
+## Stage 14B/14C/14D-1/14D-2/14E 公共契约与正式参数化原型
 
 ### aspect、viewport 与统一 resolver
 
@@ -975,10 +975,14 @@ Hyperbola 路径同样只消费已签名批准的 `ParameterIntervalPlan`，并�
 
 Parabola 路径只消费已签名批准的最多两个 `ParameterIntervalPlan`，在首个输出数组分配前重投影 geometry，并复验 spec/interval/branch/policy/version/budget/limits。每个 OPEN interval 用绝对样本索引的 `j/(N-1)`，显式固定两端点；batch 内使用 `np.errstate(over="raise", invalid="raise")`，把 `t*t` 直接写入对应最终坐标 slice，不建立平方或 transcendental 临时数组。参数、坐标全部有限，每个 segment 至少有一对相邻不同点；每点 exact residual。metadata 与 range 一一对应且 branch 固定为 0，x/y/ranges 自有只读并保存现有 plan snapshot。所有成功结果报告实际 segment 数的 clipping warning，并可追加 precision warning。取消覆盖 receipt 后、context/budget 后、首次分配前后、每 segment/batch、坐标后、每 256 个 residual、metadata/冻结/snapshot/返回前；sampler 不重入 resolver、Builder 或 interval planner。
 
-Stage 14B-2 验收矩阵继续覆盖 line v1 的全部冻结行为。Stage 14C 验收矩阵覆盖 angular policy、完整/裁切/跨 seam/最多四弧、切点和不可见、outward 自动视口、确定性点数与 batch、完整预算/receipt 篡改、残差 warning/error、所有新增取消检查点、正式数组所有权/冻结、Circle/Ellipse 直接原型及显函数/renderer/executor/workers/public API 静态边界。Stage 14D-1 验收矩阵覆盖双曲线两种轴向、平移、左右/上下 branch identity、单支/拆分/双支/孤立切点/不可见、exact-before-root 决策、教学 auto viewport、导数点数、49 项 exact liveness 与所有预算边界、receipt 篡改、残差 warning/error、非有限与坍缩、所有取消检查点和相同静态架构边界。Stage 14D-2 验收矩阵覆盖四种 opening、平移、auto teaching window、单/双/空/singleton interval、exact-before-sqrt、导数点数、31/27 项 exact liveness、零 transcendental 预算与 batch 精确边界、完整 receipt/budget 篡改、残差 warning/error、underflow/overflow/坍缩、所有取消检查点、数组所有权、四向正式原型和相同静态阶段边界；实现方有序证据为 Stage 14D-2 定向测试 66 passed、Stage 14B-1/B-2/C/D-1/D-2 联合测试 375 passed、`tests/engine` 1621 passed、public API 5 passed、完整回归 2079 passed，全部为 0 failed / 0 errors / 0 skipped。
+Stage 14B-2 验收矩阵继续覆盖 line v1 的全部冻结行为。Stage 14C 验收矩阵覆盖 angular policy、完整/裁切/跨 seam/最多四弧、切点和不可见、outward 自动视口、确定性点数与 batch、完整预算/receipt 篡改、残差 warning/error、所有新增取消检查点、正式数组所有权/冻结、Circle/Ellipse 直接原型及显函数/renderer/executor/workers/public API 静态边界。Stage 14D-1 验收矩阵覆盖双曲线两种轴向、平移、左右/上下 branch identity、单支/拆分/双支/孤立切点/不可见、exact-before-root 决策、教学 auto viewport、导数点数、49 项 exact liveness 与所有预算边界、receipt 篡改、残差 warning/error、非有限与坍缩、所有取消检查点和相同静态架构边界。Stage 14D-2 验收矩阵覆盖四种 opening、平移、auto teaching window、单/双/空/singleton interval、exact-before-sqrt、导数点数、31/27 项 exact liveness、零 transcendental 预算与 batch 精确边界、完整 receipt/budget 篡改、残差 warning/error、underflow/overflow/坍缩、所有取消检查点、数组所有权、四向正式原型和相同静态阶段边界。
+
+Stage 14E 新增跨类型矩阵，使用 exact `LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec` 和既有 M1 显函数复验公共契约、AUTO_GEOMETRY/aspect、exact plan/result 字段、segment topology、不误连、预算、只读数组/snapshot、warning/error、receipt 全字段篡改、极端合法输入、`NUMERIC_RANGE_UNSUPPORTED`、`NO_VISIBLE_CURVE` 和合作取消。独立 oracle 仅用 primitive equation 与 `Fraction.from_float`，不调用生产 residual/projector/planner；静态检查确认无 contour、无 sampler 重入、无 geometry renderer/scene executor/Actor/UI/第二套公开管线。确定性探针覆盖 14 个固定教学与裁切场景、70 个保留记录；全部成功，原始总耗时 0.9235–70.9235 ms，样本数 2–2400、segment 数 1–2，最大获批总内存预算 69,301,000 bytes。该数据是开发参考，不是正式 P50/P95 或 M1.5 性能结论。
+
+最终自动化证据为 Stage 14D-1/14E、public API 与 benchmark 契约定向复验 331 passed、Stage 14B-1/B-2/C/D-1/D-2/E 联合测试 614 passed、`tests/engine` 1860 passed、public API 5 passed、`tests/benchmarks` 101 passed、完整回归 2325 passed，全部为 0 failed / 0 errors / 0 skipped。
 
 ### 明确未实现与门禁
 
-Stage 14D-1 已实现双曲线 AUTO_GEOMETRY、两支有限可见参数区间、预算审批与正式参数化采样；Stage 14D-2 已实现抛物线 AUTO_GEOMETRY、单数学分支、最多两个有限可见 OPEN interval、预算审批与正式参数化采样。geometry renderer、contour 后备链路、多 item、`SceneRenderExecutor`/RenderActor/AppController/UI 整合仍未实现，也未实施 Stage 14E 或 Stage 15。
+Stage 14E 已完成，P0-06 已关闭，Stage 14 已完成并允许进入 Stage 15。geometry renderer、contour 后备链路、多 item、`SceneRenderExecutor`/RenderActor/AppController/UI 整合仍未实现，Stage 15 尚未开始。
 
-因此 P0-06 保持打开，不宣称 Stage 14、Stage 15 或 M1.5 完成；本步骤只完成 14D-2，尚未进入 14E、Stage 15 或 renderer 整合。
+该结论不宣称 P0-07、真实教材验收、正式 P50/P95、M1.5 checkpoint 或核心 MVP 完成；这些仍受 Stage 15 及后续门禁约束。

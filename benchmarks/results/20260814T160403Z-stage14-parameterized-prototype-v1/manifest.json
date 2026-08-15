@@ -1,0 +1,36 @@
+{
+  "boundary_statements": [
+    "Only the direct analyzer/resolver/RenderPlanBuilder/parameterized-sampler chain is measured.",
+    "Actor, renderer, PNG, GUI, preview, and copy are excluded.",
+    "Results from this machine are development references only.",
+    "A result below two seconds is only necessary Stage 15 screening evidence, not M1.5 performance acceptance.",
+    "No formal P50 or P95 is calculated or claimed by this prototype."
+  ],
+  "generated_at_utc": "2026-08-14T16:04:03.566533Z",
+  "measurement_runs": 5,
+  "protocol_version": "stage14-parameterized-prototype-v1",
+  "record_count": 70,
+  "result_files": [
+    "manifest.json",
+    "environment.json",
+    "records.jsonl",
+    "summary.json"
+  ],
+  "scenario_order": [
+    "line-vertical",
+    "line-general",
+    "circle-origin",
+    "circle-translated",
+    "ellipse-origin",
+    "ellipse-translated",
+    "hyperbola-horizontal",
+    "hyperbola-vertical",
+    "hyperbola-one-branch-split",
+    "parabola-up",
+    "parabola-down",
+    "parabola-right",
+    "parabola-left",
+    "parabola-vertex-excluded-two-segments"
+  ],
+  "warmup_runs": 1
+}
