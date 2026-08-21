@@ -1,7 +1,7 @@
 # 数学绘图助手：Codex 协助开发步骤清单
 
 版本：v0.3（架构同步版）  
-最后更新：2026-07-19  
+最后更新：2026-08-21
 对应 PRD：`数学绘图助手 PRD.md` v0.3  
 文档状态：待逐阶段执行；本次文档评审不自动开始阶段 0
 
@@ -294,7 +294,7 @@ docs/supported-formulas.md
 
 ### 阶段 15：M1.5 渲染整合、回归与性能基准
 
-状态：Stage 15-0 执行章程已冻结，Stage 15A 已独立审核 APPROVE；Stage 15B“统一 SceneRenderExecutor 与结果契约”候选实施已完成，等待真正独立只读审核和总架构师验收。15C 及后续子步未开始，不得自动进入下一步。本登记不表示 Actor/Controller/UI 真实组合、GUI 闭环、正式性能、教材证据、P0-07、checkpoint 或核心 MVP 已完成。
+状态：Stage 15-0 执行章程已冻结，Stage 15A 已独立审核 APPROVE，Stage 15B“统一 SceneRenderExecutor 与结果契约”已最终独立审核 PASS，Stage 15C“RenderActor / AppController 真实 production 组合证明”已通过独立只读审核及总架构师验收。Stage 15D 及后续子步尚未开始，不得自动进入下一步。本登记不表示 GUI 闭环、Stage 15、M1.5、正式性能、教材证据、P0-07、checkpoint 或核心 MVP 已完成。
 
 目标：完成直线、圆与圆锥曲线的单项场景闭环。
 

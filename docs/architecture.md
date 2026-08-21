@@ -2,7 +2,7 @@
 
 版本：v0.1  
 最后更新：2026-08-21
-状态：实施中的架构基线（Stage 14 已完成且 P0-06 已关闭；Stage 15A 统一 renderer 已完成；Stage 15B 统一 executor 与结果契约候选实施已完成并等待独立审核/总架构师验收；15C 起尚未开始）
+状态：实施中的架构基线（Stage 14 已完成且 P0-06 已关闭；Stage 15A 统一 renderer 已完成；Stage 15B 统一 executor 与结果契约已独立审核 PASS；Stage 15C 真实 production 组合已通过独立审核及总架构师验收；Stage 15D 及后续尚未开始）
 
 ## 1. 文档职责与事实来源
 
@@ -415,6 +415,16 @@ receipt 与 sampled provenance（经既有 `_sampled_parameterized_curve_matches
 viewport warning 只进入 scene，sampling warning 进入 item，scene 顺序为 viewport 后 sampling 并稳定去重。`no_visible_curve` 始终失败且不调用 renderer。item 已知后的 ErrorInfo 绑定该 item，scene 与 item 共享同一对象。取消只在 exact item identity 匹配时返回完全中性 sentinel；错误 identity 是 `internal_error`。运行 timing 使用单调高分辨率时钟，固定为 request validation、analysis、viewport resolution、render plan、sampling、rendering 的失败前缀或成功全序列；它不是正式性能证据。
 
 15B 未修改 Actor、Controller、bootstrap、UI、clipboard、limits、analyzer、resolver、Builder、render plan、samplers 或 renderer。既有正式组合的 M1.5 证明属于 15C，GUI 闭环属于 15D；P0-07、教材证据、正式性能、checkpoint 与核心 MVP 仍未完成。
+
+### 7.12 Stage 15C 真实 production 组合证据
+
+Stage 15C 不增加渲染能力，也不修改 production。验收证据通过 `bootstrap.create_application_runtime` 的真实对象图钉住唯一 exact `SceneRenderExecutor`、唯一 exact `RenderActor`、Actor 专属 `QThread`、exact `AppController` 及其 identity 注入关系；根目录旧 `main_window`/`plot_engine` 入口未被 production bootstrap 导入。
+
+显函数与 geometry 均经 Controller 创建正式请求，由 Actor 把同一 `CancellationToken` 对象交给 `SceneRenderExecutor.execute`，再由 unified executor 传给 typed sampler 和 `render_sampled_curve_png`。executor、renderer、`Figure`、`FigureCanvasAgg` 与 `BytesIO` 位于同一非 GUI Actor 线程，Matplotlib 最大同时进入数为 1；缓冲均关闭，Figure/Canvas/BytesIO 经 GC 可释放，Actor 随后仍可继续消费请求。
+
+真实组合证据同时覆盖：current + latest pending 的 production latest-wins，中间 pending 不进入 executor，旧 token/result 由 Actor gate 抑制；在 Actor mailbox completion decision 之后仍在途的结果分别由 AppController 的 `request_id` 和 `scene_revision` 门禁判为 obsolete；typed failure 与脱敏 internal failure 均保留上一成功图，同一 production executor 可在异常后恢复；shutdown timeout 关闭提交/结果门、取消 current/pending、临时 keepalive 最终归零且晚到结果不发布。oval、hyperbola、parabola 使用 Controller 创建的同一 token 子类在真实 geometry sampler poll 取消，得到只含 production item ID 的 exact `SamplingCancelled`，executor 返回中性取消 sentinel，Actor 不发布部分结果。
+
+上述内容只构成 Stage 15C 已验收的自动化组合证据，不冒充人工验收或正式性能，不处理 F-2/F-3，不关闭 P0-07，不创建 checkpoint。Stage 15C 已通过独立只读审核及总架构师验收；Stage 15D 及后续尚未开始。
 
 ## 8. RenderActor 并发模型
 
