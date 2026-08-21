@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
 文档版本：stage-15b-unified-executor-v1
-状态：阶段 13A 至 13E、Stage 14B 至 14E 和 Stage 15A 已完成；Stage 15B 候选实施已把 `SceneRenderExecutor` 统一为 M1/M1.5 单项 manual production executor，六种 exact 类型统一进入 `render_sampled_curve_png`。既有 Actor/Controller/UI 文件未在 15B 修改，M1.5 真实组合证明属于 15C，GUI 闭环属于 15D；Stage 15、P0-07、正式性能、教材证据、checkpoint 和核心 MVP 均未完成。
+状态：阶段 13A 至 13E、Stage 14B 至 14E、Stage 15A/15B/15C 已完成；Stage 15-D1/D2/D3 已通过独立审核并获总架构师最终接受，Stage 15-D 已正式完成。Stage 15-E 在本提交前尚未开始；Stage 15、P0-07、正式性能、教材证据、M1.5 checkpoint 和核心 MVP 均未完成。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
@@ -38,7 +38,7 @@ PlotItemRequest
 → PlotItemSpec | ErrorInfo
 ```
 
-`analyze_plot_item` 是阶段 13 的正式单项分析边界：它不生成 `PlotSceneSpec`，不计算 viewport，也不执行 sampling 或 render。equation Spec 的 viewport、数值规划与参数化采样原型已由 Stage 14 完成；Stage 15A 已把六种 typed sampled output 经统一 renderer 入口渲染为 Agg/PNG，Stage 15B 再把该入口接入唯一 `SceneRenderExecutor`。Actor/Controller/UI 的真实组合与 GUI 闭环仍属于 15C/15D。阶段 6/7 的规范化、词法化、SourceMap、AST 和既有显函数 validation 语义不变，也不导入 SymPy 或执行数值求值、常量折叠、化简、展开、移项或求解。
+`analyze_plot_item` 是阶段 13 的正式单项分析边界：它不生成 `PlotSceneSpec`，不计算 viewport，也不执行 sampling 或 render。equation Spec 的 viewport、数值规划与参数化采样原型已由 Stage 14 完成；Stage 15A 已把六种 typed sampled output 经统一 renderer 入口渲染为 Agg/PNG，Stage 15B 再把该入口接入唯一 `SceneRenderExecutor`，Stage 15C 已验收 Actor/Controller/bootstrap 的真实 production 组合。Stage 15-D1 已接入 UI 三态比例与既有 revision/request 通道；Stage 15-D2 已接入 accepted-result 摘要、持久 warning、不可见失败、旧图保护和复制反馈，并与 D3 一同完成最终接受。阶段 6/7 的规范化、词法化、SourceMap、AST 和既有显函数 validation 语义不变，也不导入 SymPy 或执行数值求值、常量折叠、化简、展开、移项或求解。
 
 ## 字符与 token 白名单
 
@@ -388,9 +388,9 @@ x:[0,1)  ^:[1,3)  2:[3,4)
 未提供 x 时使用 `fallback_auto_x_*` 与 `fallback_auto_y_*`。正常探测成功使用
 `ViewportSource.AUTO_PROBE`。
 
-| 警告代码 | 含义 | 首次使用 |
-|---|---|---|
-| `auto_viewport_fallback` | 数学探测不可靠，使用集中式安全回退范围 | 阶段 8B resolver |
+| 警告代码 | 含义 | 首次使用 | Stage 15-D2 固定中文展示 |
+|---|---|---|---|
+| `auto_viewport_fallback` | 数学探测不可靠，使用集中式安全回退范围 | 阶段 8B resolver | 自动视口探测不可靠，已使用安全范围。 |
 
 ## 阶段 8C-1 单项 RenderPlan、预算与 approval receipt
 
@@ -578,12 +578,12 @@ segment 可见，当且仅当至少有一个点位于闭区间 `[y_min,y_max]`�
 
 warning 只含稳定 code 和匹配的 typed metrics，不含自由文本周期声明：
 
-| warning code | typed metrics | 语义 |
-|---|---|---|
-| `partial_domain_omitted` | `finite_sample_count`、`nonfinite_sample_count` | 部分定义域有可绘制结果，非有限部分已省略 |
-| `dense_oscillation_suspected` | `significant_direction_change_count`、`valid_adjacent_pair_count`、`samples_per_monotone_run` | 受预算样本可能不足以表达密集振荡 |
-| `viewport_clipped` | exact `ViewportClippedMetrics(clipped_segment_count)` | Stage 14B-2 直线固定报告 1；Stage 14C 部分可见圆/椭圆报告实际可见弧数，完整闭合曲线不报告 |
-| `sampling_precision_limited` | exact `SamplingPrecisionLimitedMetrics(limited_segment_count)` | Stage 14B-2 直线或 Stage 14C 圆/椭圆残差超过目标阈值但未超过 hard threshold 时报告受限 segment 数 |
+| warning code | typed metrics | 语义 | Stage 15-D2 固定中文展示 |
+|---|---|---|---|
+| `partial_domain_omitted` | `finite_sample_count`、`nonfinite_sample_count` | 部分定义域有可绘制结果，非有限部分已省略 | 部分定义域没有可绘制值，已省略不可绘制部分。 |
+| `dense_oscillation_suspected` | `significant_direction_change_count`、`valid_adjacent_pair_count`、`samples_per_monotone_run` | 受预算样本可能不足以表达密集振荡 | 当前区间内可能包含密集振荡，请确认是否需要调整范围。 |
+| `viewport_clipped` | exact `ViewportClippedMetrics(clipped_segment_count)` | Stage 14B-2 直线固定报告 1；Stage 14C 部分可见圆/椭圆报告实际可见弧数，完整闭合曲线不报告 | 曲线在当前视口中被裁切。 |
+| `sampling_precision_limited` | exact `SamplingPrecisionLimitedMetrics(limited_segment_count)` | Stage 14B-2 直线或 Stage 14C 圆/椭圆残差超过目标阈值但未超过 hard threshold 时报告受限 segment 数 | 当前采样精度受限，图像可能不够精确。 |
 
 密集振荡代理在每个 segment 内读取一阶差分；绝对变化小于一个 y 输出像素
 `(y_max-y_min)/image_height` 时忽略。统计显著差分方向反转，`valid_adjacent_pair_count` 为
@@ -730,7 +730,7 @@ NumericExecutionCost.max_live_float64_vectors
 ## M1.5 阶段 13 已实现范围
 
 <!-- STAGE_13_STATUS_START -->
-阶段 13A 至 13E 已完成。`analyze_plot_item` 是 M1.5 正式的单项 request-level 分析入口；既有 `analyze_explicit_function`、`classify_plot` 和 `ValidatedExplicitExpression` 保持兼容。阶段 13 本身不生成 `PlotSceneSpec`；Stage 14 已在后续完成 typed spec → `PlotSceneSpec` → viewport/Builder/receipt/sampling 原型；Stage 15A 完成统一 renderer，Stage 15B 中 SceneRenderExecutor 已统一 M1/M1.5 单项 manual production 链。既有 Actor、Controller 或 UI 文件未在 15B 修改，真实组合证明和 GUI 闭环仍分别属于 15C/15D。Stage 15 仍未完成，核心 MVP 也未因阶段 13/14/15A/15B 候选实施而完成。
+阶段 13A 至 13E 已完成。`analyze_plot_item` 是 M1.5 正式的单项 request-level 分析入口；既有 `analyze_explicit_function`、`classify_plot` 和 `ValidatedExplicitExpression` 保持兼容。阶段 13 本身不生成 `PlotSceneSpec`；Stage 14 已在后续完成 typed spec → `PlotSceneSpec` → viewport/Builder/receipt/sampling 原型；Stage 15A 完成统一 renderer，Stage 15B 中 SceneRenderExecutor 已统一 M1/M1.5 单项 manual production 链。Stage 15C 已证明 Actor、Controller 或 UI 正式对象图中的真实组合链；Stage 15-D1/D2/D3 已通过独立审核并获总架构师最终接受，Stage 15-D 已正式完成。Stage 15 与核心 MVP 仍未完成。
 <!-- STAGE_13_STATUS_END -->
 
 当前实现接受仅含有理系数、总次数为 1 或 2 的方程，并以 bounded exact arithmetic 归一化为 primitive integer coefficients。它通过 typed `PlotKind` 路由交付下列非退化 Spec：一般直线 `LineSpec`，以及轴向平行的 `CircleSpec`、`EllipseSpec`、`HyperbolaSpec` 和 `ParabolaSpec`。
@@ -773,6 +773,16 @@ NumericExecutionCost.max_live_float64_vectors
 ### aspect、viewport 与统一 resolver
 
 `ViewportRequest.aspect_request` 的默认值为 `AspectRequest.DEFAULT`。request enum 的完整成员是 `DEFAULT | AUTO | EQUAL`；成功的 `ResolvedViewport.aspect` 必须是 exact `ResolvedAspect.AUTO | ResolvedAspect.EQUAL`，不得保存任何 `AspectRequest` 成员。
+
+Stage 15-D1 的 UI 映射固定为：
+
+| `ViewportPanel` 显示 | 提交值 |
+|---|---|
+| 按图形默认（第一项、默认选中） | exact `default` / `AspectRequest.DEFAULT` |
+| 自动 | exact `auto` / `AspectRequest.AUTO` |
+| 等比例 | exact `equal` / `AspectRequest.EQUAL` |
+
+accessible description 同时覆盖这三项；`aspect_mode()` 遇到异常非字符串 data 时安全回退 `default`。每次真实选择变化只沿既有 `scene_edited` 通道立即增加一次 revision，不防抖；同值设置不形成变化。UI 不检查图形类型、不解析 DEFAULT，只将一次性 UI 快照交给 AppController。
 
 DEFAULT 映射表：
 
@@ -1003,8 +1013,34 @@ warning 所有权固定为：viewport warning 只属于 scene，sampling warning
 
 `elapsed_ms` 使用单调高分辨率时钟并固定六阶段顺序：`request_validation`、`analysis`、`viewport_resolution`、`render_plan`、`sampling`、`rendering`；失败只保留到失败阶段的有序前缀。合法 `SamplingCancelled`/`RenderCancelled` 必须匹配当前 item，统一返回完全中性的无 error/item/viewport/warning/diagnostics/timing sentinel；错误 identity 不得伪装取消。该 timing 是运行诊断，不是 Stage 15F 正式性能证据。
 
+### Stage 15C 已验收 production 组合与 Stage 15-D1/D2 累积接受边界
+
+Stage 15C 已通过独立只读审核及总架构师验收：唯一 `SceneRenderExecutor → RenderActor → AppController → MainWindow` production 对象图、同一 token、latest-wins、request/revision 双门、旧成功图保护、异常恢复与 shutdown 均已有真实组合证据。Stage 15-D1 在该链上只增加三态 UI 输入证据；Aspect/ResolvedAspect、resolver、executor、Actor、bootstrap 和公共结果协议均零修改。
+
+Stage 15-D1 纵向结果保持：显函数/一般直线 DEFAULT→AUTO；圆/椭圆/双曲线/抛物线 DEFAULT→EQUAL；显式 AUTO/EQUAL 优先；manual 四边界优先且 source 为 MANUAL。历史时间线按 P2-1 分支 (b) 修正：D1 当时没有可验证独立审核记录，D2 因流程理解错误先行实施；随后 `stage-15d-independent-review-notes.md` 成为 D1+D2 首次累积独立审核并获得总架构师接受。一次性 benchmark allowlist 扩展也已正式追认；冻结性能协议、工具、结果和 hash 零修改。
+
+### Stage 15-D2 accepted-result GUI 与持久 warning（经累积补审核接受）
+
+六类结果标签固定为：`EXPLICIT_FUNCTION`→显函数、`GENERAL_LINE`→一般直线、`CIRCLE`→圆、`ELLIPSE`→椭圆、`HYPERBOLA`→双曲线、`PARABOLA`→抛物线。单一 accepted-success GUI 管线同时替换 PNG、类型标签、`normalized_input` 与 scene warning；摘要和图片同寿命，不按类型分裂 UI 状态机。
+
+warning 只按 `PlotSceneResult.warnings` 顺序映射，不重新读取/合并 `item_results[].warnings`。它显示在底部状态区主状态下方，具有独立可访问名称/描述，并与保留成功图绑定；复制成功/失败的 timer 只覆盖主状态，warning 持续到下一 accepted success 替换。warning 是成功上的非阻塞提示，不禁用复制。
+
+主状态优先级、不可见与旧图保护固定为：关闭 → rendering → current failure → stale → accepted success → idle。`no_visible_curve` 是失败，专属中文句为“当前视口内没有发现曲线，请调整 x、y 范围。”；有旧图的失败追加一次“本次生成失败，预览仍是上一张成功图片。”；rendering 有旧图显示“正在生成图像，当前仍显示上一张成功图片。”；stale 显示“输入已修改，当前图像对应旧输入。”。复制只使用 Controller 准备的 retained PNG snapshot 和 `ClipboardService`；fresh、重复、stale、rendering、failed-current 均不从 preview/QPixmap/QImage 反取。
+
+Stage 15-B F-2 用户文案登记：统一 executor 的 `INVALID_REQUEST` 中文句从“当前阶段只支持一个手动输入的显函数绘图项。”变为“当前阶段只支持一个手动输入的绘图项。”，错误码、field_name 和恢复语义不变。Stage 15-D2 没有扩展公开 API、ErrorCode、warning code 或公共结果协议；F-GUI-01 的窄裁定只用于上述 `no_visible_curve` GUI 专属句，没有完整 ErrorCode→中文旁路表。
+
+D2 已与 D1 一并通过首次累积独立审核并获总架构师接受；该接受发生在 D2 实施之后。
+
+### Stage 15-D3 响应式/缩放证据与最终接受
+
+D3 不改变数学支持范围，也不增加按公式类型分支。M1 与 M1.5 继续共用同一个 `MainWindow → AppController → RenderActor → SceneRenderExecutor` GUI 状态机。自动化补齐无图/处理中、accepted/warning/stale/current-failure/no-visible/obsolete、旧图保留和 fresh/repeated/stale/rendering/failed-current copy 的组合证据，并在最小支持窗口验证固定底部操作区、滚动内容、word-wrap 与可见区域互不覆盖。
+
+预览缩放只从 retained source `QImage` 创建 pixmap，固定使用 `KeepAspectRatio`。多轮宽窄 resize 证明 source 内容和尺寸不变、显示宽高比只受整数像素舍入影响且不会累计失真。圆的 DEFAULT→`ResolvedAspect.EQUAL` production 结果与该 Qt 缩放契约共同构成“不因窗口尺寸把圆拉伸成椭圆”的自动化证据；不同 Windows DPI 的真实观察仍留给 Stage 15-G。
+
+`docs/manual-test-checklist-m1.5.md` 已建立但未执行，所有矩阵项均标记“未执行 / 留待 Stage 15-G”。D3 已通过独立审核及总架构师最终接受，Stage 15-D 已正式完成；实际绿色结果为 57 passed、162 passed、2576 passed，`git diff --check` 通过，无 P0/P1/P2，P3-1/P3-2/P3-3 均为非阻塞观察。Stage 15-E 在本提交前尚未开始。
+
 ### 明确未实现与门禁
 
-Stage 14E 已完成，P0-06 已关闭，Stage 14 已完成并允许进入 Stage 15。Stage 15-0 已冻结执行章程；Stage 15A 统一 renderer 已完成；Stage 15B 统一 executor 与公共结果契约候选实施已完成，等待真正独立只读审核和总架构师验收。contour 后备链路、多 item、RenderActor/AppController/UI 的 M1.5 真实组合与 GUI 整合仍未实现；15C 及后续子步尚未开始。
+Stage 14E 已完成，P0-06 已关闭，Stage 14 已完成并允许进入 Stage 15。Stage 15-0 已冻结执行章程；Stage 15A/15B/15C 均已验收，Stage 15-D1/D2/D3 已通过独立审核并获总架构师最终接受，Stage 15-D 已正式完成；contour 后备链路和多 item 仍未实现；Stage 15-E 在本提交前尚未开始。
 
 该结论不宣称 P0-07、真实教材验收、正式 P50/P95、M1.5 checkpoint 或核心 MVP 完成；这些仍受 Stage 15 及后续门禁约束。

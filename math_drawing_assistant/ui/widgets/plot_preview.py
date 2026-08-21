@@ -53,12 +53,24 @@ class PlotPreview(QFrame):
         self._stale_label.setWordWrap(True)
         self._stale_label.setVisible(False)
 
+        self._summary_label = QLabel()
+        self._summary_label.setObjectName("previewResultSummary")
+        self._summary_label.setWordWrap(True)
+        self._summary_label.setAccessibleName("绘图结果摘要")
+        self._summary_label.setAccessibleDescription(
+            "显示当前预览图片的图形类型和规范化表达式"
+        )
+        self._summary_label.setVisible(False)
+
         self._source_image: QImage | None = None
+        self._result_plot_type: str | None = None
+        self._normalized_input: str | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._placeholder)
         layout.addWidget(self._image_label, 1)
+        layout.addWidget(self._summary_label)
         layout.addWidget(self._stale_label)
 
     # ------------------------------------------------------------------
@@ -84,13 +96,56 @@ class PlotPreview(QFrame):
         self._assert_gui_thread()
         self.set_image(qimage_from_png_bytes(data))
 
+    def set_result(
+        self,
+        data: bytes | bytearray | memoryview,
+        *,
+        plot_type: str,
+        normalized_input: str,
+    ) -> None:
+        """Atomically replace the accepted image and its single-item summary."""
+
+        self._assert_gui_thread()
+        if type(plot_type) is not str or not plot_type.strip():
+            raise ValueError("plot_type must be a non-empty string")
+        if type(normalized_input) is not str or not normalized_input.strip():
+            raise ValueError("normalized_input must be a non-empty string")
+        image = qimage_from_png_bytes(data)
+        self._set_image(
+            image,
+            plot_type=plot_type,
+            normalized_input=normalized_input,
+        )
+
     def set_image(self, image: QImage) -> None:
         """Display a valid QImage, retaining a detached unscaled source copy."""
         self._assert_gui_thread()
+        self._set_image(image, plot_type=None, normalized_input=None)
+
+    def _set_image(
+        self,
+        image: QImage,
+        *,
+        plot_type: str | None,
+        normalized_input: str | None,
+    ) -> None:
         if image.isNull() or image.width() <= 0 or image.height() <= 0:
             raise ValueError("预览图像必须具有正的宽度和高度")
 
         self._source_image = image.copy()
+        self._result_plot_type = plot_type
+        self._normalized_input = normalized_input
+        if plot_type is None or normalized_input is None:
+            self._summary_label.clear()
+            self._summary_label.setVisible(False)
+        else:
+            summary = (
+                f"图形类型：{plot_type}\n"
+                f"规范化表达式：{normalized_input}"
+            )
+            self._summary_label.setText(summary)
+            self._summary_label.setAccessibleDescription(summary.replace("\n", "；"))
+            self._summary_label.setVisible(True)
         self._stale_label.setVisible(False)
         self._placeholder.setVisible(False)
         self._image_label.setVisible(True)
@@ -124,6 +179,23 @@ class PlotPreview(QFrame):
         pixmap = self._image_label.pixmap()
         return None if pixmap is None or pixmap.isNull() else pixmap
 
+    @property
+    def result_plot_type(self) -> str | None:
+        """Return the concrete type label bound to the displayed image."""
+
+        return self._result_plot_type
+
+    @property
+    def normalized_input(self) -> str | None:
+        """Return the normalized expression bound to the displayed image."""
+
+        return self._normalized_input
+
+    def summary_text(self) -> str:
+        """Return the visible accepted-result summary text."""
+
+        return self._summary_label.text()
+
     def resizeEvent(self, event: QResizeEvent) -> None:
         """Adapt the display to the newly available preview area."""
         super().resizeEvent(event)
@@ -133,8 +205,12 @@ class PlotPreview(QFrame):
 
     def _show_empty_state(self, text: str) -> None:
         self._source_image = None
+        self._result_plot_type = None
+        self._normalized_input = None
         self._image_label.clear()
         self._image_label.setVisible(False)
+        self._summary_label.clear()
+        self._summary_label.setVisible(False)
         self._stale_label.setVisible(False)
         self._placeholder.setText(text)
         self._placeholder.setVisible(True)

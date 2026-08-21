@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import inspect
 from pathlib import Path
 
 import pytest
@@ -133,6 +134,83 @@ def test_initial_ui_contains_all_required_panels(qapp: QApplication) -> None:
         QApplication.processEvents()
 
 
+def test_aspect_options_are_exact_three_state_ui_with_safe_default_fallback(
+    qapp: QApplication,
+) -> None:
+    """比例下拉按冻结顺序映射三态，且异常数据安全回退到 default。"""
+    window = MainWindow()
+    try:
+        combo = window.viewport_panel._aspect_combo
+        assert [combo.itemText(index) for index in range(combo.count())] == [
+            "按图形默认",
+            "自动",
+            "等比例",
+        ]
+        assert [combo.itemData(index) for index in range(combo.count())] == [
+            "default",
+            "auto",
+            "equal",
+        ]
+        assert combo.currentIndex() == 0
+        assert window.viewport_panel.aspect_mode() == "default"
+        description = combo.accessibleDescription()
+        assert all(label in description for label in ("按图形默认", "自动", "等比例"))
+
+        combo.addItem("无效测试项", None)
+        combo.setCurrentIndex(combo.count() - 1)
+        assert window.viewport_panel.aspect_mode() == "default"
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+
+
+def test_each_true_aspect_change_emits_exactly_one_scene_edit(
+    qapp: QApplication,
+) -> None:
+    """真实比例变化逐次发出一次既有 scene_edited，同值不重复发出。"""
+    window = MainWindow()
+    try:
+        spy = QSignalSpy(window.viewport_panel.scene_edited)
+
+        window.viewport_panel.set_aspect_mode("auto")
+        assert spy.count() == 1
+        window.viewport_panel.set_aspect_mode("auto")
+        assert spy.count() == 1
+        window.viewport_panel.set_aspect_mode("equal")
+        assert spy.count() == 2
+        window.viewport_panel.set_aspect_mode("default")
+        assert spy.count() == 3
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+
+
+def test_aspect_ui_does_not_import_or_reimplement_math_resolution() -> None:
+    """三态 UI 只提交字符串意图，不引入数学分类或第二渲染链。"""
+    import math_drawing_assistant.ui.main_window as main_window_module
+    import math_drawing_assistant.ui.widgets.viewport_panel as viewport_panel_module
+
+    source = "\n".join(
+        (
+            inspect.getsource(main_window_module),
+            inspect.getsource(viewport_panel_module),
+        )
+    )
+    forbidden = (
+        "math_drawing_assistant.engine",
+        "matplotlib",
+        "ResolvedAspect",
+        "PlotKind",
+        "resolve_single_item_viewport",
+        "RenderPlanBuilder",
+        "sample_explicit_function",
+        "sample_parameterized_curve",
+    )
+    assert all(term not in source for term in forbidden)
+
+
 def test_scrollable_content_and_fixed_action_area_have_separate_ownership(
     qapp: QApplication,
 ) -> None:
@@ -186,6 +264,71 @@ def test_fixed_actions_remain_visible_when_window_is_short(
         )
         assert scroll.widgetResizable() is True
         assert scroll.verticalScrollBar().maximum() > 0
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+
+
+def test_minimum_supported_window_keeps_actions_reachable_and_text_wrapped(
+    qapp: QApplication,
+) -> None:
+    """最小支持窗口仍固定显示核心操作，长状态文本使用安全换行。"""
+
+    window = MainWindow()
+    try:
+        window.resize(window.minimumSize())
+        window.status_panel.set_status(
+            "当前视口内没有发现曲线，请调整 x、y 范围。"
+            "本次生成失败，预览仍是上一张成功图片。",
+            "error",
+        )
+        window.status_panel.set_warning_messages(
+            (
+                "自动视口探测不可靠，已使用安全范围。",
+                "部分定义域没有可绘制值，已省略不可绘制部分。",
+                "当前区间内可能包含密集振荡，请确认是否需要调整范围。",
+                "曲线在当前视口中被裁切。",
+                "当前采样精度受限，图像可能不够精确。",
+            )
+        )
+        window.show()
+        QApplication.processEvents()
+
+        scroll = window.findChild(QScrollArea, "contentScrollArea")
+        bottom = window.findChild(QWidget, "bottomActionArea")
+        assert scroll is not None
+        assert bottom is not None
+        assert window.width() == window.minimumWidth()
+        assert window.height() == window.minimumHeight()
+        assert scroll.geometry().bottom() < bottom.geometry().top()
+        assert scroll.verticalScrollBar().maximum() > 0
+
+        buttons = (
+            window.generate_button,
+            window.clear_button,
+            window.copy_button,
+        )
+        assert all(button.isVisibleTo(window) for button in buttons)
+        assert all(bottom.rect().contains(button.geometry()) for button in buttons)
+        assert all(
+            not left.geometry().intersects(right.geometry())
+            for index, left in enumerate(buttons)
+            for right in buttons[index + 1 :]
+        )
+
+        wrapped_labels = (
+            window.status_panel._text_label,
+            window.status_panel._warning_label,
+            window.plot_preview._placeholder,
+            window.plot_preview._summary_label,
+            window.plot_preview._stale_label,
+        )
+        assert all(label.wordWrap() for label in wrapped_labels)
+        assert window.plot_preview._placeholder.isVisible() is True
+        assert window.plot_preview._image_label.isVisible() is False
+        assert window.plot_preview._summary_label.isVisible() is False
+        assert window.plot_preview._stale_label.isVisible() is False
     finally:
         window.close()
         window.deleteLater()

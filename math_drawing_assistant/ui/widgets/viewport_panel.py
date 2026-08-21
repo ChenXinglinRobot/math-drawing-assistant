@@ -35,6 +35,7 @@ class ViewportPanel(QGroupBox):
 
     # ---- 坐标比例选项 ----
     ASPECT_OPTIONS = {
+        "default": "按图形默认",
         "auto": "自动",
         "equal": "等比例",
     }
@@ -73,7 +74,9 @@ class ViewportPanel(QGroupBox):
         # ------------------------------------------------------------------
         self._aspect_combo = QComboBox()
         self._aspect_combo.setAccessibleName("坐标比例模式")
-        self._aspect_combo.setAccessibleDescription("选择自动或等比例坐标")
+        self._aspect_combo.setAccessibleDescription(
+            "选择按图形默认、自动或等比例坐标"
+        )
         self._aspect_combo.setMinimumHeight(44)
         for key, label in self.ASPECT_OPTIONS.items():
             self._aspect_combo.addItem(label, key)
@@ -211,9 +214,9 @@ class ViewportPanel(QGroupBox):
         self._y_max.setValue(value)
 
     def aspect_mode(self) -> str:
-        """返回 ``"auto"`` 或 ``"equal"``。"""
+        """返回 ``"default"``、``"auto"`` 或 ``"equal"``。"""
         data = self._aspect_combo.currentData()
-        return data if isinstance(data, str) else "auto"
+        return data if isinstance(data, str) else "default"
 
     def set_aspect_mode(self, mode: str) -> None:
         index = self._aspect_combo.findData(mode)

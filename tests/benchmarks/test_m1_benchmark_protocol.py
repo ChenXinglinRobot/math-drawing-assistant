@@ -165,7 +165,13 @@ def test_protocol_freezes_new_batch_retest_command_contract() -> None:
     assert "禁止 self-retest" in text
 
 
-def test_frozen_defaults_match_the_real_ui_and_controller() -> None:
+def test_m1_performance_v1_keeps_its_historical_auto_aspect_default() -> None:
+    text = PROTOCOL.read_text(encoding="utf-8")
+
+    assert "| 比例 | `auto` | `ViewportPanel` 首个 aspect 项 |" in text
+
+
+def test_current_ui_and_controller_defaults_are_exercised_separately() -> None:
     script = """
 import json
 from PySide6.QtWidgets import QApplication
@@ -174,14 +180,14 @@ from math_drawing_assistant.ui.main_window import MainWindow
 app = QApplication([])
 window = MainWindow(controller=AppController())
 viewport = window.viewport_panel
-print(json.dumps([
-    viewport.viewport_mode(),
-    viewport.aspect_mode(),
-    viewport.show_grid(),
-    viewport.image_width(),
-    viewport.image_height(),
-    M1_DEFAULT_DPI,
-]))
+print(json.dumps({
+    "viewport_mode": viewport.viewport_mode(),
+    "aspect_mode": viewport.aspect_mode(),
+    "show_grid": viewport.show_grid(),
+    "image_width": viewport.image_width(),
+    "image_height": viewport.image_height(),
+    "dpi": M1_DEFAULT_DPI,
+}))
 window.close()
 """
     environment = os.environ.copy()
@@ -197,4 +203,11 @@ window.close()
         text=True,
         encoding="utf-8",
     )
-    assert json.loads(completed.stdout) == ["auto", "auto", True, 800, 600, 96]
+    assert json.loads(completed.stdout) == {
+        "viewport_mode": "auto",
+        "aspect_mode": "default",
+        "show_grid": True,
+        "image_width": 800,
+        "image_height": 600,
+        "dpi": 96,
+    }

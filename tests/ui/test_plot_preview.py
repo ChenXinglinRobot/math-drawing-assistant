@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import threading
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
@@ -80,6 +82,60 @@ def test_resize_reuses_unscaled_source_image(preview: PlotPreview) -> None:
     assert preview.source_image.size() == qimage_from_png_bytes(PNG_3X2).size()
 
 
+def test_repeated_resize_cycles_preserve_source_and_scale_only_from_it(
+    preview: PlotPreview,
+) -> None:
+    """反复宽窄缩放不改变 retained source，也不累计缩略图误差。"""
+
+    preview.set_result(
+        PNG_3X2,
+        plot_type="圆",
+        normalized_input="x^2+y^2=4",
+    )
+    original = preview.source_image
+    assert original is not None
+    original_size = original.size()
+    repeated_baseline_sizes: list[tuple[int, int]] = []
+
+    sizes = (
+        (300, 200),
+        (720, 420),
+        (360, 620),
+        (900, 260),
+        (300, 200),
+    )
+    for _ in range(3):
+        for width, height in sizes:
+            preview.resize(width, height)
+            QApplication.processEvents()
+
+            retained = preview.source_image
+            pixmap = preview.displayed_pixmap
+            assert retained is not None
+            assert retained.size() == original_size
+            assert retained == original
+            assert pixmap is not None
+            assert pixmap.width() <= preview._image_label.contentsRect().width()
+            assert pixmap.height() <= preview._image_label.contentsRect().height()
+            assert abs(
+                pixmap.width() * original_size.height()
+                - pixmap.height() * original_size.width()
+            ) <= max(original_size.width(), original_size.height())
+
+            if (width, height) == sizes[0]:
+                repeated_baseline_sizes.append(
+                    (pixmap.width(), pixmap.height())
+                )
+
+    assert len(set(repeated_baseline_sizes)) == 1
+
+    refresh_source = inspect.getsource(PlotPreview._refresh_pixmap)
+    assert "self._source_image" in refresh_source
+    assert "self._image_label.pixmap" not in refresh_source
+    assert "Qt.AspectRatioMode.KeepAspectRatio" in refresh_source
+    assert Qt.AspectRatioMode.KeepAspectRatio is not None
+
+
 def test_tiny_or_zero_size_does_not_crash_and_later_recovers(
     preview: PlotPreview,
 ) -> None:
@@ -94,11 +150,25 @@ def test_tiny_or_zero_size_does_not_crash_and_later_recovers(
 
 
 def test_repeated_set_replacement_clear_and_stale_states(preview: PlotPreview) -> None:
-    preview.set_png_bytes(PNG_3X2)
+    preview.set_result(
+        PNG_3X2,
+        plot_type="圆",
+        normalized_input="x^2+y^2=4",
+    )
     first = preview.displayed_pixmap
+    assert preview.result_plot_type == "圆"
+    assert preview.normalized_input == "x^2+y^2=4"
+    assert preview.summary_text() == (
+        "图形类型：圆\n规范化表达式：x^2+y^2=4"
+    )
+    assert preview._summary_label.isVisible() is True
+
     preview.set_image(qimage_from_png_bytes(PNG_3X2))
     assert preview.displayed_pixmap is not None
     assert preview.source_image is not None
+    assert preview.result_plot_type is None
+    assert preview.normalized_input is None
+    assert preview._summary_label.isVisible() is False
 
     preview.set_stale(True)
     assert preview._stale_label.isVisible() is True
@@ -115,7 +185,37 @@ def test_repeated_set_replacement_clear_and_stale_states(preview: PlotPreview) -
     assert preview.displayed_pixmap is None
     assert preview._placeholder.isVisible() is True
     assert preview._stale_label.isVisible() is False
+    assert preview._summary_label.isVisible() is False
+    assert preview.result_plot_type is None
+    assert preview.normalized_input is None
     assert first is not None
+
+
+def test_result_summary_replaces_atomically_and_shares_image_lifetime(
+    preview: PlotPreview,
+) -> None:
+    preview.set_result(
+        PNG_3X2,
+        plot_type="抛物线",
+        normalized_input="x^2=4*y",
+    )
+    source = preview.source_image
+
+    with pytest.raises(ValueError):
+        preview.set_result(
+            PNG_3X2,
+            plot_type="",
+            normalized_input="x^2=4*y",
+        )
+    assert preview.source_image == source
+    assert preview.result_plot_type == "抛物线"
+    assert preview.normalized_input == "x^2=4*y"
+
+    preview.show_placeholder()
+    assert preview.source_image is None
+    assert preview.summary_text() == ""
+    assert preview.result_plot_type is None
+    assert preview.normalized_input is None
 
 
 def test_invalid_qimage_is_rejected(preview: PlotPreview) -> None:

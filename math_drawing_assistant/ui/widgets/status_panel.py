@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 
 class StatusPanel(QWidget):
@@ -47,11 +47,30 @@ class StatusPanel(QWidget):
             QSizePolicy.Policy.Preferred,
         )
 
-        layout = QHBoxLayout(self)
+        self._warning_label = QLabel()
+        self._warning_label.setObjectName("persistentWarning")
+        self._warning_label.setWordWrap(True)
+        self._warning_label.setAccessibleName("绘图警告")
+        self._warning_label.setAccessibleDescription(
+            "显示与当前保留成功图片绑定的非阻塞警告"
+        )
+        self._warning_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        self._warning_label.setVisible(False)
+
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(6)
+        status_row.addWidget(self._icon_label)
+        status_row.addWidget(self._text_label, 1)
+
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        layout.addWidget(self._icon_label)
-        layout.addWidget(self._text_label, 1)
+        layout.setSpacing(4)
+        layout.addLayout(status_row)
+        layout.addWidget(self._warning_label)
 
         self.setObjectName("statusIdle")
 
@@ -80,3 +99,28 @@ class StatusPanel(QWidget):
     def status_text(self) -> str:
         """返回当前状态文字。"""
         return self._text_label.text()
+
+    def set_warning_messages(self, messages: tuple[str, ...]) -> None:
+        """Replace the warning bound to the retained accepted result."""
+
+        snapshot = tuple(messages)
+        if not all(type(message) is str and message.strip() for message in snapshot):
+            raise ValueError("warning messages must be non-empty strings")
+        self._warning_label.setText("\n".join(snapshot))
+        self._warning_label.setAccessibleDescription(
+            "与当前保留成功图片绑定的非阻塞警告：" + "；".join(snapshot)
+            if snapshot
+            else "当前保留成功图片没有警告"
+        )
+        self._warning_label.setVisible(bool(snapshot))
+
+    def warning_messages(self) -> tuple[str, ...]:
+        """Return persistent warning lines in their displayed order."""
+
+        text = self._warning_label.text()
+        return () if not text else tuple(text.split("\n"))
+
+    def warning_text(self) -> str:
+        """Return the persistent warning text without changing main status."""
+
+        return self._warning_label.text()

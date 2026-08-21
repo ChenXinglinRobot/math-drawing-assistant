@@ -18,6 +18,7 @@ from math_drawing_assistant.app_controller import (
     RenderResultDisposition,
 )
 from math_drawing_assistant.models import (
+    AspectRequest,
     ErrorCode,
     ErrorInfo,
     InputSource,
@@ -231,6 +232,35 @@ def test_m1_auto_adapter_does_not_copy_disabled_display_bounds() -> None:
 
     assert request.viewport.mode.value == "auto"
     assert request.viewport.aspect_request.value == "auto"
+    assert request.viewport.x_min is None
+    assert request.viewport.x_max is None
+    assert request.viewport.y_min is None
+    assert request.viewport.y_max is None
+
+
+@pytest.mark.parametrize(
+    "aspect_request",
+    (AspectRequest.DEFAULT, AspectRequest.AUTO, AspectRequest.EQUAL),
+)
+def test_m1_adapter_preserves_each_exact_aspect_request(
+    aspect_request: AspectRequest,
+) -> None:
+    controller = AppController()
+
+    request = controller.create_m1_render_request(
+        formula_text="y=x^2",
+        viewport_mode="auto",
+        x_min=float("nan"),
+        x_max=float("nan"),
+        y_min=float("nan"),
+        y_max=float("nan"),
+        aspect_request=aspect_request.value,
+        show_grid=True,
+        image_width=800,
+        image_height=600,
+    )
+
+    assert request.viewport.aspect_request is aspect_request
     assert request.viewport.x_min is None
     assert request.viewport.x_max is None
     assert request.viewport.y_min is None

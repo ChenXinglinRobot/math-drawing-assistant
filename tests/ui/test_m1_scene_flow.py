@@ -20,11 +20,14 @@ from math_drawing_assistant.config import DEFAULT_LIMITS
 from math_drawing_assistant.engine import scene_executor as scene_executor_module
 from math_drawing_assistant.engine.scene_executor import SceneRenderExecutor
 from math_drawing_assistant.models import (
+    AspectRequest,
     ErrorCode,
     ErrorInfo,
     PlotKind,
     PlotSceneResult,
+    ResolvedAspect,
     TaskPhase,
+    ViewportSource,
 )
 from math_drawing_assistant.services.clipboard_service import (
     ClipboardService,
@@ -170,6 +173,89 @@ def test_every_result_relevant_widget_change_immediately_marks_revision(
         QApplication.processEvents()
 
 
+def test_aspect_selection_marks_one_revision_and_enters_exact_request_snapshot(
+    qapp: QApplication,
+) -> None:
+    window, controller, submitter = _window_with_submitter(qapp)
+    try:
+        assert window.viewport_panel.aspect_mode() == "default"
+        window.generate_button.click()
+        assert submitter.submissions[-1][0].viewport.aspect_request is (
+            AspectRequest.DEFAULT
+        )
+
+        for mode, expected in (
+            ("auto", AspectRequest.AUTO),
+            ("equal", AspectRequest.EQUAL),
+            ("default", AspectRequest.DEFAULT),
+        ):
+            previous_revision = controller.current_scene_revision
+            window.viewport_panel.set_aspect_mode(mode)
+            assert controller.current_scene_revision == previous_revision + 1
+            window.generate_button.click()
+            request = submitter.submissions[-1][0]
+            assert request.scene_revision == controller.current_scene_revision
+            assert request.viewport.aspect_request is expected
+
+        previous_revision = controller.current_scene_revision
+        window.viewport_panel.set_aspect_mode("default")
+        assert controller.current_scene_revision == previous_revision
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+
+
+def test_generate_reads_each_ui_snapshot_field_exactly_once(
+    qapp: QApplication,
+    monkeypatch,
+) -> None:
+    window, _, submitter = _window_with_submitter(qapp)
+    try:
+        accessors = {
+            "formula_text": (window.formula_panel, "text"),
+            "viewport_mode": (window.viewport_panel, "viewport_mode"),
+            "x_min": (window.viewport_panel, "x_min"),
+            "x_max": (window.viewport_panel, "x_max"),
+            "y_min": (window.viewport_panel, "y_min"),
+            "y_max": (window.viewport_panel, "y_max"),
+            "aspect_request": (window.viewport_panel, "aspect_mode"),
+            "show_grid": (window.viewport_panel, "show_grid"),
+            "image_width": (window.viewport_panel, "image_width"),
+            "image_height": (window.viewport_panel, "image_height"),
+        }
+        calls = {name: 0 for name in accessors}
+        calls_at_submit: list[dict[str, int]] = []
+        original_submit = submitter.submit
+
+        def observe_submit(request: object, token: CancellationToken) -> bool:
+            calls_at_submit.append(calls.copy())
+            return original_submit(request, token)
+
+        monkeypatch.setattr(submitter, "submit", observe_submit)
+        for snapshot_name, (owner, method_name) in accessors.items():
+            original = getattr(owner, method_name)
+
+            def read_once(
+                *,
+                _snapshot_name: str = snapshot_name,
+                _original=original,
+            ):
+                calls[_snapshot_name] += 1
+                return _original()
+
+            monkeypatch.setattr(owner, method_name, read_once)
+
+        window.generate_button.click()
+
+        assert len(submitter.submissions) == 1
+        assert calls_at_submit == [{name: 1 for name in accessors}]
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.processEvents()
+
+
 def test_generate_reads_one_manual_snapshot_and_rendering_can_supersede(
     qapp: QApplication,
 ) -> None:
@@ -259,7 +345,9 @@ def test_success_stale_failure_and_obsolete_ui_behavior(qapp: QApplication) -> N
         assert window.handle_render_result(_failure(current_request)) is (
             RenderResultDisposition.HANDLED_CURRENT_FAILURE
         )
-        assert window.status_panel.status_text() == "本次生成失败。"
+        assert window.status_panel.status_text() == (
+            "本次生成失败。 本次生成失败，预览仍是上一张成功图片。"
+        )
         assert window.plot_preview.source_image == retained_image
         assert window.plot_preview._stale_label.isVisible() is True
         assert window.copy_button.isEnabled() is True
@@ -309,7 +397,7 @@ def test_stale_rendering_and_failed_current_copy_the_retained_old_plot(
         window.copy_button.click()
         assert len(backend.images) == 1
         assert window.status_panel.status_text() == (
-            "已复制上一张图；当前输入已修改"
+            "已复制上一张成功图；当前输入已修改"
         )
 
         window.generate_button.click()
@@ -317,7 +405,7 @@ def test_stale_rendering_and_failed_current_copy_the_retained_old_plot(
         window.copy_button.click()
         assert len(backend.images) == 2
         assert window.status_panel.status_text() == (
-            "已复制上一张图；新图仍在生成"
+            "已复制上一张成功图；新图仍在生成"
         )
 
         window.handle_render_result(_failure(current_request))
@@ -325,7 +413,7 @@ def test_stale_rendering_and_failed_current_copy_the_retained_old_plot(
         window.copy_button.click()
         assert len(backend.images) == 3
         assert window.status_panel.status_text() == (
-            "已复制上一张图；当前输入已修改"
+            "已复制上一张成功图；本次生成失败"
         )
         assert window.plot_preview.source_image is not None
     finally:
@@ -452,13 +540,13 @@ def test_copy_feedback_is_replaced_cancelled_by_new_result_and_never_reopens_shu
 
     window.copy_button.click()
     assert len(backend.images) == 2
-    assert window.status_panel.status_text() == "已复制上一张图；当前输入已修改"
+    assert window.status_panel.status_text() == "已复制上一张成功图；当前输入已修改"
     assert window._copy_feedback_timer.isActive() is True
 
     window.generate_button.click()
     second_request = submitter.submissions[-1][0]
     window.copy_button.click()
-    assert window.status_panel.status_text() == "已复制上一张图；新图仍在生成"
+    assert window.status_panel.status_text() == "已复制上一张成功图；新图仍在生成"
     assert window._copy_feedback_timer.isActive() is True
 
     window.handle_render_result(_success(second_request))
@@ -521,13 +609,17 @@ def test_real_scene_executor_runs_in_actor_and_preview_updates_on_gui_thread(
     controller = AppController(render_submitter=actor)
     window = MainWindow(controller=controller)
     preview_thread_ids: list[int] = []
-    original_set_png_bytes = window.plot_preview.set_png_bytes
+    original_set_result = window.plot_preview.set_result
 
-    def record_preview(data: bytes) -> None:
+    def record_preview(data: bytes, *, plot_type: str, normalized_input: str) -> None:
         preview_thread_ids.append(get_ident())
-        original_set_png_bytes(data)
+        original_set_result(
+            data,
+            plot_type=plot_type,
+            normalized_input=normalized_input,
+        )
 
-    window.plot_preview.set_png_bytes = record_preview  # type: ignore[method-assign]
+    window.plot_preview.set_result = record_preview  # type: ignore[method-assign]
     actor.result_ready.connect(window.handle_render_result)
     results = QSignalSpy(actor.result_ready)
     started = QSignalSpy(actor._thread.started)
@@ -612,6 +704,8 @@ def test_formal_production_chain_accepts_declared_m1_formulas(
             assert item_result.success is True
             assert item_result.normalized_input == normalized
             assert item_result.plot_kind is PlotKind.EXPLICIT_FUNCTION
+            assert delivered.resolved_viewport is not None
+            assert delivered.resolved_viewport.aspect is ResolvedAspect.AUTO
             assert controller.last_successful_result is delivered
             assert controller.is_ready is True
             assert window.plot_preview.source_image is not None
@@ -622,6 +716,78 @@ def test_formal_production_chain_accepts_declared_m1_formulas(
         assert len(executor.thread_ids) == len(cases)
         assert len(set(executor.thread_ids)) == 1
         assert executor.thread_ids[0] != get_ident()
+    finally:
+        assert window.close() is True
+        assert actor.is_running is False
+        window.deleteLater()
+        QApplication.processEvents()
+
+
+def test_formal_production_chain_resolves_each_ui_aspect_intent(
+    qapp: QApplication,
+) -> None:
+    cases = (
+        ("y=x^2", "default", ResolvedAspect.AUTO),
+        ("y=x^2", "auto", ResolvedAspect.AUTO),
+        ("y=x^2", "equal", ResolvedAspect.EQUAL),
+        ("x=2", "default", ResolvedAspect.AUTO),
+        ("x^2+y^2=4", "default", ResolvedAspect.EQUAL),
+        ("x^2/9+y^2/4=1", "default", ResolvedAspect.EQUAL),
+        ("x^2/9-y^2/4=1", "default", ResolvedAspect.EQUAL),
+        ("x^2=4*y", "default", ResolvedAspect.EQUAL),
+        ("x^2+y^2=4", "auto", ResolvedAspect.AUTO),
+        ("x^2+y^2=4", "equal", ResolvedAspect.EQUAL),
+    )
+    executor = _RecordingSceneExecutor()
+    actor = RenderActor(executor)
+    controller = AppController(render_submitter=actor)
+    window = MainWindow(controller=controller)
+    actor.result_ready.connect(window.handle_render_result)
+    results = QSignalSpy(actor.result_ready)
+    started = QSignalSpy(actor._thread.started)
+    actor.start()
+    assert started.count() >= 1 or started.wait(3_000) is True
+    window.viewport_panel.set_image_width(400)
+    window.viewport_panel.set_image_height(300)
+    window.show()
+    QApplication.processEvents()
+    try:
+        for index, (formula, aspect_mode, expected) in enumerate(cases, start=1):
+            window.formula_panel.set_text(formula)
+            window.viewport_panel.set_viewport_mode("auto")
+            window.viewport_panel.set_aspect_mode(aspect_mode)
+            window.generate_button.click()
+            _wait_for_signal_count(actor.result_ready, results, index)
+
+            delivered = results.at(index - 1)[0]
+            assert delivered.success is True
+            assert delivered.resolved_viewport is not None
+            assert delivered.resolved_viewport.aspect is expected
+            assert controller.last_successful_result is delivered
+            assert window.plot_preview.source_image is not None
+            assert window.plot_preview._stale_label.isVisible() is False
+
+        window.formula_panel.set_text("x^2+y^2=4")
+        window.viewport_panel.set_viewport_mode("manual")
+        window.viewport_panel.set_x_min(-3.0)
+        window.viewport_panel.set_x_max(7.0)
+        window.viewport_panel.set_y_min(-11.0)
+        window.viewport_panel.set_y_max(13.0)
+        window.viewport_panel.set_aspect_mode("default")
+        window.generate_button.click()
+        _wait_for_signal_count(actor.result_ready, results, len(cases) + 1)
+
+        manual = results.at(len(cases))[0]
+        assert manual.success is True
+        assert manual.resolved_viewport is not None
+        assert manual.resolved_viewport.source is ViewportSource.MANUAL
+        assert manual.resolved_viewport.aspect is ResolvedAspect.EQUAL
+        assert (
+            manual.resolved_viewport.x_min,
+            manual.resolved_viewport.x_max,
+            manual.resolved_viewport.y_min,
+            manual.resolved_viewport.y_max,
+        ) == (-3.0, 7.0, -11.0, 13.0)
     finally:
         assert window.close() is True
         assert actor.is_running is False

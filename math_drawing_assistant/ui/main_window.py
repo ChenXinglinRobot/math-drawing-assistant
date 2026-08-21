@@ -30,7 +30,8 @@ from math_drawing_assistant.app_controller import (
     CopyPreparationStatus,
     RenderResultDisposition,
 )
-from math_drawing_assistant.models.results import PlotSceneResult
+from math_drawing_assistant.models.errors import ErrorCode
+from math_drawing_assistant.models.results import ConcretePlotType, PlotSceneResult
 from math_drawing_assistant.models.state import TaskPhase
 from math_drawing_assistant.services.clipboard_service import (
     ClipboardService,
@@ -59,6 +60,25 @@ class MainWindow(QMainWindow):
     copy_requested = Signal()
 
     COPY_FEEDBACK_DURATION_MS = 1500
+
+    _PLOT_TYPE_LABELS: dict[ConcretePlotType, str] = {
+        ConcretePlotType.EXPLICIT_FUNCTION: "显函数",
+        ConcretePlotType.GENERAL_LINE: "一般直线",
+        ConcretePlotType.CIRCLE: "圆",
+        ConcretePlotType.ELLIPSE: "椭圆",
+        ConcretePlotType.HYPERBOLA: "双曲线",
+        ConcretePlotType.PARABOLA: "抛物线",
+    }
+
+    _WARNING_MESSAGES: dict[str, str] = {
+        "auto_viewport_fallback": "自动视口探测不可靠，已使用安全范围。",
+        "partial_domain_omitted": "部分定义域没有可绘制值，已省略不可绘制部分。",
+        "dense_oscillation_suspected": (
+            "当前区间内可能包含密集振荡，请确认是否需要调整范围。"
+        ),
+        "viewport_clipped": "曲线在当前视口中被裁切。",
+        "sampling_precision_limited": "当前采样精度受限，图像可能不够精确。",
+    }
 
     # ---- TaskPhase → 状态文字映射 ----
     _PHASE_STATUS_TEXT: dict[TaskPhase, str] = {
@@ -380,10 +400,13 @@ class MainWindow(QMainWindow):
             return
 
         if controller.task_phase is TaskPhase.RENDERING:
-            message = "已复制上一张图；新图仍在生成"
+            message = "已复制上一张成功图；新图仍在生成"
+            level = "warning"
+        elif controller.last_error_notice is not None:
+            message = "已复制上一张成功图；本次生成失败"
             level = "warning"
         elif preparation.candidate.is_stale:
-            message = "已复制上一张图；当前输入已修改"
+            message = "已复制上一张成功图；当前输入已修改"
             level = "warning"
         else:
             message = "图片已写入剪贴板"
@@ -415,7 +438,37 @@ class MainWindow(QMainWindow):
             if accepted is None or accepted.png_bytes is None:
                 self._status_panel.set_status("无法显示生成的图像。", "error")
                 return disposition
-            self._plot_preview.set_png_bytes(accepted.png_bytes)
+            item_result = (
+                accepted.item_results[0]
+                if len(accepted.item_results) == 1
+                else None
+            )
+            if (
+                item_result is not None
+                and item_result.concrete_plot_type in self._PLOT_TYPE_LABELS
+                and item_result.normalized_input
+            ):
+                self._plot_preview.set_result(
+                    accepted.png_bytes,
+                    plot_type=self._PLOT_TYPE_LABELS[
+                        item_result.concrete_plot_type
+                    ],
+                    normalized_input=item_result.normalized_input,
+                )
+            else:
+                # Compatibility for historical successful scene fixtures that
+                # predate accepted-result metadata. Production M1/M1.5 results
+                # always take the summary-bearing branch above.
+                self._plot_preview.set_png_bytes(accepted.png_bytes)
+            self._status_panel.set_warning_messages(
+                tuple(
+                    self._WARNING_MESSAGES.get(
+                        code,
+                        "绘图成功，但有一项提示需要注意。",
+                    )
+                    for code in accepted.warnings
+                )
+            )
 
         self._sync_controller_state()
         return disposition
@@ -429,7 +482,24 @@ class MainWindow(QMainWindow):
             controller.task_phase,
             controller.copy_enabled,
         )
-        self._plot_preview.set_stale(controller.result_is_stale)
+        if controller.has_plot_result:
+            if controller.task_phase is TaskPhase.RENDERING:
+                self._plot_preview.set_stale(
+                    True,
+                    "正在生成新图，当前仍显示上一张成功图片。",
+                )
+            elif controller.last_error_notice is not None:
+                self._plot_preview.set_stale(
+                    True,
+                    "本次生成失败，预览仍是上一张成功图片。",
+                )
+            else:
+                self._plot_preview.set_stale(
+                    controller.result_is_stale,
+                    "输入已修改，当前图像对应旧输入。",
+                )
+        else:
+            self._plot_preview.set_stale(False)
 
         if controller.task_phase is TaskPhase.SHUTTING_DOWN:
             if controller.last_error_notice is not None:
@@ -439,10 +509,20 @@ class MainWindow(QMainWindow):
                 )
             return
         if controller.task_phase is TaskPhase.RENDERING:
+            if controller.has_plot_result:
+                self._status_panel.set_status(
+                    "正在生成图像，当前仍显示上一张成功图片。",
+                    "processing",
+                )
             return
         if controller.last_error_notice is not None:
+            message = self._failure_message(controller.last_error_notice)
+            if controller.has_plot_result:
+                retained_notice = "本次生成失败，预览仍是上一张成功图片。"
+                if retained_notice not in message:
+                    message = f"{message} {retained_notice}"
             self._status_panel.set_status(
-                controller.last_error_notice.user_message,
+                message,
                 "error",
             )
         elif controller.result_is_stale:
@@ -454,6 +534,14 @@ class MainWindow(QMainWindow):
         self._copy_feedback_timer.stop()
         self._status_panel.set_status(message, level)
         self._copy_feedback_timer.start(self.COPY_FEEDBACK_DURATION_MS)
+
+    @staticmethod
+    def _failure_message(notice: object) -> str:
+        """Apply the narrow F-GUI-01 no-visible product wording ruling."""
+
+        if getattr(notice, "code", None) is ErrorCode.NO_VISIBLE_CURVE:
+            return "当前视口内没有发现曲线，请调整 x、y 范围。"
+        return str(getattr(notice, "user_message", "本次生成失败。"))
 
     def _cancel_copy_feedback(self) -> None:
         if self._copy_feedback_timer.isActive():
