@@ -23,6 +23,7 @@ from math_drawing_assistant.engine.renderer import (
     RenderCancelled,
     RenderOutcome,
     render_explicit_png,
+    render_sampled_curve_png,
 )
 from math_drawing_assistant.engine.scene_executor import SceneRenderExecutor
 from math_drawing_assistant.engine.samplers import (
@@ -138,6 +139,7 @@ __all__ = [
     "resolve_single_explicit_viewport",
     "resolve_single_item_viewport",
     "render_explicit_png",
+    "render_sampled_curve_png",
     "sample_explicit_function",
     "sample_parameterized_curve",
     "split_equation",

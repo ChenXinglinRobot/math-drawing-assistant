@@ -1709,3 +1709,117 @@ def test_bounded_repeated_rendering_has_no_manager_or_object_retention(
     assert events.count("encode") == 20
     assert manager_creations == 0
     _assert_resources_released(buffers, references)
+
+
+# --- Stage 15A additions: unified sampled-curve renderer entry ----------------
+#
+# The additions below are append-only; every pre-Stage-15A assertion above is
+# unchanged and must keep passing against the shared implementation core.
+
+
+GEOMETRY_REJECTION_TEXTS = (
+    "2*x-y+3=0",
+    "x^2+y^2=25",
+    "x^2/9+y^2/4=1",
+    "x^2/9-y^2/4=1",
+    "x^2=4*y",
+)
+
+
+def _geometry_plan_and_sampled(
+    text: str,
+    *,
+    item_id: str,
+) -> tuple[RenderPlan, object]:
+    from math_drawing_assistant.engine import (
+        analyze_plot_item,
+        resolve_single_item_viewport,
+        sample_parameterized_curve,
+    )
+    from math_drawing_assistant.models import PlotSceneSpec, ViewportRequest
+
+    spec = analyze_plot_item(
+        PlotItemRequest(
+            item_id=item_id,
+            input_text=text,
+            input_source=InputSource.MANUAL,
+            requested_plot_kind=PlotKind.AUTO,
+            display_order=0,
+        )
+    )
+    assert not isinstance(spec, ErrorInfo), spec
+    scene = PlotSceneSpec(items=(spec,))
+    resolution = resolve_single_item_viewport(scene, ViewportRequest())
+    assert resolution.error is None, resolution.error
+    assert resolution.viewport is not None
+    plan = RenderPlanBuilder().build(
+        scene,
+        resolution.viewport,
+        image_width=800,
+        image_height=600,
+        dpi=96,
+        show_grid=True,
+        show_legend=False,
+    )
+    assert type(plan) is RenderPlan, plan
+    sampled = sample_parameterized_curve(plan)
+    assert not isinstance(sampled, ErrorInfo), sampled
+    return plan, sampled
+
+
+def test_unified_entry_pins_the_public_signature() -> None:
+    from math_drawing_assistant.engine import render_sampled_curve_png
+
+    signature = inspect.signature(render_sampled_curve_png)
+
+    assert tuple(signature.parameters) == (
+        "plan",
+        "sampling_outcome",
+        "cancellation_probe",
+    )
+    assert signature.parameters["cancellation_probe"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert set(get_args(RenderOutcome)) == {bytes, RenderCancelled, ErrorInfo}
+
+
+def test_unified_entry_renders_the_existing_explicit_pipeline() -> None:
+    from math_drawing_assistant.engine import render_sampled_curve_png
+
+    plan = _plan(image_width=613, image_height=347, dpi=144)
+
+    outcome = render_sampled_curve_png(plan, _sample(plan))
+
+    assert isinstance(outcome, bytes)
+    assert outcome[12:16] == b"IHDR"
+    assert int.from_bytes(outcome[16:20], "big") == 613
+    assert int.from_bytes(outcome[20:24], "big") == 347
+
+
+@pytest.mark.parametrize("text", GEOMETRY_REJECTION_TEXTS)
+def test_explicit_entry_rejects_geometry_results_before_any_resource(
+    text: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, sampled = _geometry_plan_and_sampled(
+        text,
+        item_id="stage15a-old-contract",
+    )
+    events, buffers, references = _track_render_resources(monkeypatch)
+
+    outcome = render_explicit_png(plan, sampled)
+
+    assert isinstance(outcome, ErrorInfo)
+    assert outcome.code is ErrorCode.INTERNAL_ERROR
+    assert outcome.recoverable is False
+    assert outcome.technical_message == "approved render-plan item contract failed"
+    assert events == []
+    assert buffers == []
+
+    explicit_plan = _plan("x", item_id="stage15a-old-explicit")
+    mismatched = render_explicit_png(explicit_plan, sampled)
+
+    assert isinstance(mismatched, ErrorInfo)
+    assert mismatched.code is ErrorCode.INTERNAL_ERROR
+    assert mismatched.recoverable is False
+    assert mismatched.technical_message == "sampling outcome type mismatch"
+    assert events == []
+    assert buffers == []

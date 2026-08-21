@@ -294,7 +294,7 @@ docs/supported-formulas.md
 
 ### 阶段 15：M1.5 渲染整合、回归与性能基准
 
-状态：Stage 15-0“入口收口与执行章程”已完成文档冻结，15A 尚未开始，Stage 15 实施仍未开始。Stage 14 出口已通过；后续必须按 `docs/stage-15-execution-charter.md` 的 15A→15B→15C→15D→15E→15F→15G 独立门禁逐步执行，不得合并、跳过或自动进入下一步。本登记不表示已实施 renderer、Actor、UI、正式性能或真实教材验收。
+状态：Stage 15-0“入口收口与执行章程”已完成文档冻结；Stage 15A“统一 Geometry Renderer”已在 renderer 层完成实施（统一入口 `render_sampled_curve_png` + 旧入口兼容委托、P3-1 生产边界测试、公开 API 哨兵与文档同步），等待独立只读审核与总架构师验收；15B 及后续子步未开始，Stage 15 实施仍按 `docs/stage-15-execution-charter.md` 的 15A→15B→15C→15D→15E→15F→15G 独立门禁逐步执行，不得合并、跳过或自动进入下一步。本登记不表示已实施 executor 统一、Actor、UI、正式性能或真实教材验收。
 
 目标：完成直线、圆与圆锥曲线的单项场景闭环。
 

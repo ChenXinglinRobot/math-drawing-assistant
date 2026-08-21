@@ -183,6 +183,7 @@ _EXPECTED_ENGINE_EXPORTS = frozenset(
         "normalize_input",
         "parse_input",
         "render_explicit_png",
+        "render_sampled_curve_png",
         "resolve_single_explicit_viewport",
         "resolve_single_item_viewport",
         "sample_explicit_function",
@@ -387,12 +388,13 @@ def test_supported_formulas_records_the_completed_stage_13_contract() -> None:
         "<!-- LIMIT_FIELD_INDEX_END -->",
     )
 
-    assert "文档版本：stage-14e-final-acceptance-v1" in document
+    assert "文档版本：stage-15a-renderer-v1" in document
     assert "阶段 13A 至 13E 已完成" in status
     assert "analyze_plot_item" in document
     assert "LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec" in document
     assert "Stage 14 已在后续完成" in status
-    assert "仍未接入 geometry renderer、`SceneRenderExecutor`、Actor、Controller 或 UI" in status
+    assert "统一 geometry renderer 已完成 renderer 层渲染" in status
+    assert "仍未接入 `SceneRenderExecutor`、Actor、Controller 或 UI" in status
     assert "Stage 15 仍未完成" in status
 
     assert "消费者尚未实现" not in limits_index
