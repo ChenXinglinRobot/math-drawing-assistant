@@ -1,6 +1,10 @@
 """Public immutable model contracts available through stage 13."""
 
-from math_drawing_assistant.models.diagnostics import StageTiming
+from math_drawing_assistant.models.diagnostics import (
+    PlotItemDiagnostics,
+    PlotSceneDiagnostics,
+    StageTiming,
+)
 from math_drawing_assistant.models.errors import ErrorCode, ErrorInfo, SourceSpan
 from math_drawing_assistant.models.plot_specs import (
     AxisOrientation,
@@ -59,7 +63,11 @@ from math_drawing_assistant.models.render_plan import (
     validate_approved_render_plan,
 )
 from math_drawing_assistant.models.requests import PlotItemRequest, PlotSceneRequest
-from math_drawing_assistant.models.results import PlotItemResult, PlotSceneResult
+from math_drawing_assistant.models.results import (
+    ConcretePlotType,
+    PlotItemResult,
+    PlotSceneResult,
+)
 from math_drawing_assistant.models.state import (
     AspectRequest,
     InputSource,
@@ -91,6 +99,7 @@ __all__ = [
     "BinaryOperator",
     "ConstantName",
     "ConstantNode",
+    "ConcretePlotType",
     "FunctionCallNode",
     "FunctionName",
     "InputSource",
@@ -102,10 +111,12 @@ __all__ = [
     "ParabolicSamplingPolicy",
     "ParabolaSpec",
     "PlotItemRequest",
+    "PlotItemDiagnostics",
     "PlotItemResult",
     "PlotItemSpec",
     "PlotKind",
     "PlotSceneRequest",
+    "PlotSceneDiagnostics",
     "PlotSceneResult",
     "PlotSceneSpec",
     "PrimitiveEquationCoefficients",

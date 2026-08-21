@@ -9,9 +9,11 @@ import pytest
 
 from math_drawing_assistant.models import (
     AspectRequest,
+    ConcretePlotType,
     ErrorInfo,
     InputSource,
     PlotItemRequest,
+    PlotItemDiagnostics,
     PlotItemResult,
     PlotKind,
     PlotSceneRequest,
@@ -241,9 +243,93 @@ def test_results_use_immutable_bytes_not_gui_or_mutable_buffers() -> None:
                 item_id="item-1",
                 success=True,
                 plot_kind=PlotKind.EXPLICIT_FUNCTION,
+                concrete_plot_type=ConcretePlotType.EXPLICIT_FUNCTION,
             )
         ],
     )
     assert result.png_bytes == b"png"
     assert isinstance(result.png_bytes, bytes)
     assert isinstance(result.item_results, tuple)
+
+
+def test_concrete_plot_type_is_closed_and_orthogonal_to_plot_kind() -> None:
+    assert [(value.name, value.value) for value in ConcretePlotType] == [
+        ("EXPLICIT_FUNCTION", "explicit_function"),
+        ("GENERAL_LINE", "general_line"),
+        ("CIRCLE", "circle"),
+        ("ELLIPSE", "ellipse"),
+        ("HYPERBOLA", "hyperbola"),
+        ("PARABOLA", "parabola"),
+    ]
+    for concrete, kind in (
+        (ConcretePlotType.EXPLICIT_FUNCTION, PlotKind.EXPLICIT_FUNCTION),
+        (ConcretePlotType.GENERAL_LINE, PlotKind.LINE_EQUATION),
+        (ConcretePlotType.CIRCLE, PlotKind.CONIC_EQUATION),
+        (ConcretePlotType.ELLIPSE, PlotKind.CONIC_EQUATION),
+        (ConcretePlotType.HYPERBOLA, PlotKind.CONIC_EQUATION),
+        (ConcretePlotType.PARABOLA, PlotKind.CONIC_EQUATION),
+    ):
+        result = PlotItemResult(
+            item_id="item",
+            success=True,
+            plot_kind=kind,
+            concrete_plot_type=concrete,
+        )
+        assert result.concrete_plot_type is concrete
+
+
+def test_item_result_enforces_failure_identity_style_and_owned_warnings() -> None:
+    error = ErrorInfo(
+        code="invalid_input",
+        user_message="invalid",
+        item_id="item",
+    )
+    warning_list = ["first", "second"]
+    result = PlotItemResult(
+        item_id="item",
+        success=False,
+        style_key="primary",
+        warnings=warning_list,
+        error=error,
+    )
+    warning_list.append("later")
+    assert result.warnings == ("first", "second")
+    with pytest.raises(ValueError, match="must contain an error"):
+        PlotItemResult(item_id="item", success=False)
+    with pytest.raises(ValueError, match="match"):
+        PlotItemResult(
+            item_id="item",
+            success=False,
+            error=ErrorInfo(
+                code="invalid_input",
+                user_message="invalid",
+                item_id="other",
+            ),
+        )
+    with pytest.raises(ValueError, match="style_key"):
+        PlotItemResult(item_id="item", success=True, style_key=" ")
+    with pytest.raises(ValueError, match="duplicate"):
+        PlotItemResult(item_id="item", success=True, warnings=("same", "same"))
+
+
+def test_item_diagnostics_require_a_matching_concrete_type() -> None:
+    diagnostics = PlotItemDiagnostics(planned_sample_point_count=10)
+    with pytest.raises(ValueError, match="present together"):
+        PlotItemResult(
+            item_id="item",
+            success=True,
+            plot_kind=PlotKind.EXPLICIT_FUNCTION,
+        )
+    with pytest.raises(ValueError, match="known concrete"):
+        PlotItemResult(
+            item_id="item",
+            success=True,
+            diagnostics=diagnostics,
+        )
+    with pytest.raises(ValueError, match="does not match"):
+        PlotItemResult(
+            item_id="item",
+            success=True,
+            plot_kind=PlotKind.LINE_EQUATION,
+            concrete_plot_type=ConcretePlotType.CIRCLE,
+        )

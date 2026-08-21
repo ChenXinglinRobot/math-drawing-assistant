@@ -284,13 +284,14 @@ def test_renderer_file_set_stays_singleton_and_projection_free() -> None:
         )
 
 
-def test_render_explicit_png_calls_stay_in_scene_executor_only() -> None:
-    callers = _caller_files("render_explicit_png")
-    assert callers == [PACKAGE_ROOT / "engine" / "scene_executor.py"]
+def test_legacy_render_explicit_png_has_no_production_caller_in_stage_15b() -> None:
+    assert _caller_files("render_explicit_png") == []
 
 
-def test_unified_entry_has_no_production_caller_in_stage_15a() -> None:
-    assert _caller_files("render_sampled_curve_png") == []
+def test_unified_entry_has_only_scene_executor_as_stage_15b_production_caller() -> None:
+    assert _caller_files("render_sampled_curve_png") == [
+        PACKAGE_ROOT / "engine" / "scene_executor.py"
+    ]
 
 
 def test_engine_exports_one_unified_renderer_entry_and_no_split_entries() -> None:

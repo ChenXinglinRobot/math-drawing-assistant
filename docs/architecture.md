@@ -1,8 +1,8 @@
 # 数学绘图助手：架构约束
 
 版本：v0.1  
-最后更新：2026-08-16
-状态：实施中的架构基线（Stage 14E 跨类型最终验收已通过，P0-06 已关闭，Stage 14 已完成；Stage 15-0 执行章程已冻结；Stage 15A 统一 geometry renderer 已在 renderer 层完成，executor/Actor/UI 整合与 Stage 15 后续子步尚未开始）
+最后更新：2026-08-21
+状态：实施中的架构基线（Stage 14 已完成且 P0-06 已关闭；Stage 15A 统一 renderer 已完成；Stage 15B 统一 executor 与结果契约候选实施已完成并等待独立审核/总架构师验收；15C 起尚未开始）
 
 ## 1. 文档职责与事实来源
 
@@ -384,7 +384,7 @@ Stage 14E 以直线、圆、椭圆、双曲线、抛物线和既有 M1 显函数
 
 参数化开发探针 `stage14-parameterized-prototype-v1` 只测量 `analyze_plot_item → resolve_single_item_viewport → RenderPlanBuilder.build → sample_parameterized_curve`。14 个固定场景、每场景 1 次预热和 5 次保留测量全部成功；原始总耗时范围为 0.9235–70.9235 ms，最大获批总内存预算为 69,301,000 bytes。该数据只证明当前开发机上的 Stage 14 原型可执行、可预算且明显低于两秒筛查线；不包含 renderer、Actor、PNG、GUI、preview 或 copy，不计算或宣称正式 P50/P95，也不构成 M1.5 性能验收。
 
-据跨类型测试、静态边界和确定性证据包，P0-06 于 2026-08-15 关闭，Stage 14 完成并允许进入 Stage 15。Stage 15A 的统一 geometry renderer 已在 renderer 层完成；`SceneRenderExecutor` 统一、Actor、Controller、UI、多 item、contour 后备链路、P0-07、真实教材矩阵和 M1.5 checkpoint 仍未实施或完成。
+据跨类型测试、静态边界和确定性证据包，P0-06 于 2026-08-15 关闭，Stage 14 完成并允许进入 Stage 15。Stage 15A 的统一 renderer 已完成，Stage 15B 已形成唯一单项/manual M1/M1.5 `SceneRenderExecutor` 候选链；Actor、Controller、UI、多 item、contour 后备链路、P0-07、真实教材矩阵和 M1.5 checkpoint 仍未实施或完成。
 
 ### 7.9 Stage 15-0 预实施冻结
 
@@ -405,6 +405,16 @@ Stage 15 的执行顺序、精确文件边界和证据门统一见 `docs/stage-1
 Stage 15A 只在现有 `math_drawing_assistant/engine/renderer.py` 边界内把六种 exact 类型的 typed sampled output（显函数与直线、圆、椭圆、双曲线、抛物线）统一渲染为 Agg/PNG。新公共入口 `render_sampled_curve_png` 与旧入口 `render_explicit_png` 委托同一实现核心；旧入口逐字保持原显函数专用契约，`SceneRenderExecutor` 的生产调用不变，两入口互不转发，不存在第二渲染管线或分类型 renderer 导出。
 
 receipt 与 sampled provenance（经既有 `_sampled_parameterized_curve_matches_approved_plan` helper）先于任何 Figure、Canvas、Axes、BytesIO；provenance snapshot 不替代当前 sampled metadata 复验。几何 sampled 契约先重跑 `SampledParameterizedCurve.__post_init__()`，再逐段显式调用 `SampledSegmentMetadata.__post_init__()`，并把 segment 数、branch ID、closure、逐段 sample_count、ranges 从 0 连续到最终完整覆盖与获批 plan 精确绑定；取消轮询拓扑、PNG 上限、签名/IHDR 校验、异常映射与 `finally` 全释放与显函数路径同构。每个 segment 独立绘制且互不误连；CLOSED 圆/椭圆由主段 N 点冻结数组 view 加恰一条 2 点闭合 chord artist 完成视觉闭合，chord 正式数据为常量 32 bytes/item，由 sampler 返回后不再存活的 `validation_workspace_bytes` 批处理阶段复用覆盖（BC-15A-01），预算公式与 limits 对 15A 只读；几何路径不由 renderer 合成 `no_visible_curve`，合法不可见仅上游透传。完整登记见 `docs/supported-formulas.md` 的「Stage 15A 统一 renderer 契约」小节。15A 不接 Actor、不改 GUI、不宣称 Actor 已是唯一 Matplotlib 进入者；P3-1 生产边界 AST 扫描（`tests/engine/test_stage15a_production_boundary.py`）固化上述边界。
+
+### 7.11 Stage 15B 统一 executor 与结果契约
+
+`SceneRenderExecutor` 是唯一的 M1/M1.5 单项、manual production executor。其链固定为 `PlotSceneRequest → request gate → analyze_plot_item → PlotSceneSpec → resolve_single_item_viewport → RenderPlanBuilder.build → exact typed sampler → render_sampled_curve_png → PlotSceneResult`。显函数只接受 `ExplicitFunctionSpec + ExplicitRenderItemPlan + SampledExplicitFunction`，其余五种 exact geometry 只接受 `GeometryRenderItemPlan + SampledParameterizedCurve`；任一联合或 item identity 不一致均 fail-closed。旧 `render_explicit_png` 仍为公共兼容 wrapper，但无 production caller；没有第二 executor、resolver、Builder、sampler、renderer 或 receipt。
+
+`PlotKind` 保持粗粒度四值不变；结果新增封闭 `ConcretePlotType` 六值，以 `GENERAL_LINE` 和四种具体圆锥类型供后续 UI 直接消费。`PlotItemDiagnostics` 只保存计划/实际点数、sampled/visible segment 数；`PlotSceneDiagnostics` 只保存计划/实际总点数、获批预算和最终 PNG 字节数。诊断按阶段逐步形成：plan 前为空，sampling failure 只含 planned，render failure 含完整 sampling 但 PNG count 为空，production success 完整。
+
+viewport warning 只进入 scene，sampling warning 进入 item，scene 顺序为 viewport 后 sampling 并稳定去重。`no_visible_curve` 始终失败且不调用 renderer。item 已知后的 ErrorInfo 绑定该 item，scene 与 item 共享同一对象。取消只在 exact item identity 匹配时返回完全中性 sentinel；错误 identity 是 `internal_error`。运行 timing 使用单调高分辨率时钟，固定为 request validation、analysis、viewport resolution、render plan、sampling、rendering 的失败前缀或成功全序列；它不是正式性能证据。
+
+15B 未修改 Actor、Controller、bootstrap、UI、clipboard、limits、analyzer、resolver、Builder、render plan、samplers 或 renderer。既有正式组合的 M1.5 证明属于 15C，GUI 闭环属于 15D；P0-07、教材证据、正式性能、checkpoint 与核心 MVP 仍未完成。
 
 ## 8. RenderActor 并发模型
 

@@ -146,7 +146,14 @@ def test_single_explicit_scene_succeeds_with_complete_result_metadata(
     assert item_result.normalized_input == "x^2"
     assert item_result.plot_kind is PlotKind.EXPLICIT_FUNCTION
     assert item_result.style_key == "primary"
-    assert result.elapsed_ms == ()
+    assert [timing.stage for timing in result.elapsed_ms] == [
+        "request_validation",
+        "analysis",
+        "viewport_resolution",
+        "render_plan",
+        "sampling",
+        "rendering",
+    ]
 
 
 def test_auto_y_resolution_is_returned_from_the_formal_resolver() -> None:
@@ -237,7 +244,7 @@ def test_multiple_items_are_rejected_before_analysis(
     request = replace(_request(), items=(first, second))
     monkeypatch.setattr(
         scene_executor_module,
-        "analyze_explicit_function",
+        "analyze_plot_item",
         lambda *args, **kwargs: pytest.fail("analyzer must not run"),
     )
 
@@ -252,12 +259,10 @@ def test_multiple_items_are_rejected_before_analysis(
 @pytest.mark.parametrize(
     ("plot_kind", "input_source", "field_name"),
     [
-        (PlotKind.LINE_EQUATION, InputSource.MANUAL, "requested_plot_kind"),
-        (PlotKind.CONIC_EQUATION, InputSource.MANUAL, "requested_plot_kind"),
         (PlotKind.AUTO, InputSource.OCR, "input_source"),
     ],
 )
-def test_non_m1_plot_kinds_and_ocr_are_rejected(
+def test_non_manual_input_is_rejected(
     plot_kind: PlotKind,
     input_source: InputSource,
     field_name: str,
@@ -355,7 +360,7 @@ def test_cancellation_before_analyzer_is_neutral_and_skips_analysis(
 ) -> None:
     monkeypatch.setattr(
         scene_executor_module,
-        "analyze_explicit_function",
+        "analyze_plot_item",
         lambda *args, **kwargs: pytest.fail("analyzer must not run"),
     )
 
@@ -369,7 +374,7 @@ def test_cancellation_before_analyzer_is_neutral_and_skips_analysis(
 
 @pytest.mark.parametrize(
     "stage_name",
-    ["analyze_explicit_function", "build_explicit_scene_spec"],
+    ["analyze_plot_item"],
 )
 def test_cancellation_at_early_stage_boundaries_is_neutral(
     stage_name: str,
@@ -398,7 +403,7 @@ def test_cancellation_after_viewport_and_plan_boundaries_is_neutral(
     for stage in ("viewport", "plan"):
         probe = _Probe()
         if stage == "viewport":
-            original = scene_executor_module.resolve_single_explicit_viewport
+            original = scene_executor_module.resolve_single_item_viewport
 
             def cancel_after_viewport(*args: object, **kwargs: object) -> object:
                 outcome = original(*args, **kwargs)
@@ -408,7 +413,7 @@ def test_cancellation_after_viewport_and_plan_boundaries_is_neutral(
             with monkeypatch.context() as context:
                 context.setattr(
                     scene_executor_module,
-                    "resolve_single_explicit_viewport",
+                    "resolve_single_item_viewport",
                     cancel_after_viewport,
                 )
                 result = _execute(_request(), probe=probe)
@@ -458,7 +463,10 @@ def test_cancelled_request_does_not_poison_a_later_valid_request() -> None:
     assert recovered.request_id == 2
 
 
-@pytest.mark.parametrize("stage_name", ["sample_explicit_function", "render_explicit_png"])
+@pytest.mark.parametrize(
+    "stage_name",
+    ["sample_explicit_function", "render_sampled_curve_png"],
+)
 def test_structured_stage_errors_become_scene_and_item_failures(
     stage_name: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -495,7 +503,7 @@ def test_unexpected_exception_propagates_out_of_scene_executor(
 
     monkeypatch.setattr(
         scene_executor_module,
-        "analyze_explicit_function",
+        "analyze_plot_item",
         raise_unexpected,
     )
 
@@ -510,14 +518,14 @@ def test_actor_boundary_desensitizes_unexpected_failure_and_then_recovers(
     from math_drawing_assistant.workers import render_actor as actor_module
 
     executor = SceneRenderExecutor()
-    original = scene_executor_module.analyze_explicit_function
+    original = scene_executor_module.analyze_plot_item
 
     def raise_unexpected(*args: object, **kwargs: object) -> object:
         raise RuntimeError("secret-input C:/private/path")
 
     monkeypatch.setattr(
         scene_executor_module,
-        "analyze_explicit_function",
+        "analyze_plot_item",
         raise_unexpected,
     )
     failed = actor_module._execute_task(
@@ -526,7 +534,7 @@ def test_actor_boundary_desensitizes_unexpected_failure_and_then_recovers(
     )
     monkeypatch.setattr(
         scene_executor_module,
-        "analyze_explicit_function",
+        "analyze_plot_item",
         original,
     )
     recovered = actor_module._execute_task(
@@ -561,8 +569,10 @@ def test_scene_executor_has_no_forbidden_dependency_or_second_render_path() -> N
         for root in forbidden_roots
     )
     assert not any(".workers" in module for module in imported_modules)
-    assert "render_explicit_png" in source
+    assert "render_explicit_png" not in source
+    assert "render_sampled_curve_png" in source
     assert "sample_explicit_function" in source
+    assert "_sample_geometry_curve_for_scene" in source
     assert "FigureCanvasAgg" not in source
     assert "pyplot" not in source
 
@@ -573,7 +583,7 @@ def test_scene_executor_has_no_forbidden_dependency_or_second_render_path() -> N
         if any(
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id == "render_explicit_png"
+            and node.func.id == "render_sampled_curve_png"
             for node in ast.walk(parsed)
         ):
             renderer_callers.append(path)

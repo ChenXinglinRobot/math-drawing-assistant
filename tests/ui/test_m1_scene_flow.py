@@ -505,7 +505,7 @@ def test_real_scene_executor_runs_in_actor_and_preview_updates_on_gui_thread(
 ) -> None:
     gui_thread_id = get_ident()
     renderer_thread_ids: list[int] = []
-    real_renderer = scene_executor_module.render_explicit_png
+    real_renderer = scene_executor_module.render_sampled_curve_png
 
     def record_renderer_thread(*args: object, **kwargs: object):
         renderer_thread_ids.append(get_ident())
@@ -513,7 +513,7 @@ def test_real_scene_executor_runs_in_actor_and_preview_updates_on_gui_thread(
 
     monkeypatch.setattr(
         scene_executor_module,
-        "render_explicit_png",
+        "render_sampled_curve_png",
         record_renderer_thread,
     )
     executor = _RecordingSceneExecutor()
@@ -637,7 +637,7 @@ def test_formal_failures_preserve_input_previous_preview_and_copy_state(
         ("x@", ErrorCode.UNKNOWN_CHARACTER),
         ("x+", ErrorCode.ILLEGAL_TRAILING),
         ("log(x)", ErrorCode.LOG_REQUIRES_BASE),
-        ("x+y=1", ErrorCode.UNSUPPORTED_EQUATION),
+        ("x*y=0", ErrorCode.ROTATED_CONIC_NOT_SUPPORTED),
     )
     executor = _RecordingSceneExecutor()
     actor = RenderActor(executor)

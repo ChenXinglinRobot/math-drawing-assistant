@@ -25,7 +25,6 @@ from math_drawing_assistant.engine.renderer import (
     render_explicit_png,
     render_sampled_curve_png,
 )
-from math_drawing_assistant.engine.scene_executor import SceneRenderExecutor
 from math_drawing_assistant.engine.samplers import (
     CancellationProbe,
     DenseOscillationMetrics,
@@ -47,6 +46,10 @@ from math_drawing_assistant.engine.samplers import (
     sample_explicit_function,
     sample_parameterized_curve,
 )
+# Private identity alias used by the sole production executor. It is deliberately
+# absent from __all__; the public sampler name and engine export set stay unchanged.
+_sample_geometry_curve_for_scene = sample_parameterized_curve
+from math_drawing_assistant.engine.scene_executor import SceneRenderExecutor
 from math_drawing_assistant.engine.parser import (
     ParseMetrics,
     ParsedEquationInput,

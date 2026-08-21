@@ -16,6 +16,7 @@ from math_drawing_assistant.engine.plot_analyzer import (
 from math_drawing_assistant.models import (
     AxisOrientation,
     CircleSpec,
+    ConcretePlotType,
     DEFAULT_HYPERBOLIC_SAMPLING_POLICY,
     DEFAULT_PARABOLIC_SAMPLING_POLICY,
     EllipseSpec,
@@ -31,12 +32,16 @@ from math_drawing_assistant.models import (
     ParabolicSamplingPolicy,
     ParabolaSpec,
     PlotItemRequest,
+    PlotItemDiagnostics,
     PlotItemSpec,
     PlotKind,
+    PlotSceneDiagnostics,
     PrimitiveEquationCoefficients,
 )
 from math_drawing_assistant.models import plot_specs as implementation_plot_specs
+from math_drawing_assistant.models import diagnostics as implementation_diagnostics
 from math_drawing_assistant.models import render_plan as implementation_render_plan
+from math_drawing_assistant.models import results as implementation_results
 
 
 _ROOT = Path(__file__).parents[1]
@@ -66,6 +71,7 @@ _EXPECTED_MODEL_EXPORTS = frozenset(
         "CircleSpec",
         "ConstantName",
         "ConstantNode",
+        "ConcretePlotType",
         "DEFAULT_ANGULAR_SAMPLING_POLICY",
         "DEFAULT_EXPLICIT_SAMPLING_POLICY",
         "DEFAULT_HYPERBOLIC_SAMPLING_POLICY",
@@ -94,10 +100,12 @@ _EXPECTED_MODEL_EXPORTS = frozenset(
         "ParabolicSamplingPolicy",
         "ParabolaSpec",
         "PlotItemRequest",
+        "PlotItemDiagnostics",
         "PlotItemResult",
         "PlotItemSpec",
         "PlotKind",
         "PlotSceneRequest",
+        "PlotSceneDiagnostics",
         "PlotSceneResult",
         "PlotSceneSpec",
         "PrimitiveEquationCoefficients",
@@ -329,6 +337,38 @@ def test_engine_package_publishes_only_the_stage_13_entry_point() -> None:
     )
 
 
+def test_stage15b_result_models_are_exact_frozen_slots_exports() -> None:
+    assert public_models.ConcretePlotType is implementation_results.ConcretePlotType
+    assert public_models.ConcretePlotType is ConcretePlotType
+    assert (
+        public_models.PlotItemDiagnostics
+        is implementation_diagnostics.PlotItemDiagnostics
+        is PlotItemDiagnostics
+    )
+    assert (
+        public_models.PlotSceneDiagnostics
+        is implementation_diagnostics.PlotSceneDiagnostics
+        is PlotSceneDiagnostics
+    )
+    assert [(member.name, member.value) for member in ConcretePlotType] == [
+        ("EXPLICIT_FUNCTION", "explicit_function"),
+        ("GENERAL_LINE", "general_line"),
+        ("CIRCLE", "circle"),
+        ("ELLIPSE", "ellipse"),
+        ("HYPERBOLA", "hyperbola"),
+        ("PARABOLA", "parabola"),
+    ]
+    for model in (PlotItemDiagnostics, PlotSceneDiagnostics):
+        assert model.__dataclass_params__.frozen is True
+        assert "__dict__" not in model.__dict__
+    assert [(kind.name, kind.value) for kind in PlotKind] == [
+        ("AUTO", "auto"),
+        ("EXPLICIT_FUNCTION", "explicit_function"),
+        ("LINE_EQUATION", "line_equation"),
+        ("CONIC_EQUATION", "conic_equation"),
+    ]
+
+
 def test_public_package_initializers_do_not_add_heavy_or_reverse_dependencies() -> None:
     models_source = Path(public_models.__file__).read_text(encoding="utf-8")
     engine_source = Path(public_engine.__file__).read_text(encoding="utf-8")
@@ -388,13 +428,14 @@ def test_supported_formulas_records_the_completed_stage_13_contract() -> None:
         "<!-- LIMIT_FIELD_INDEX_END -->",
     )
 
-    assert "文档版本：stage-15a-renderer-v1" in document
+    assert "文档版本：stage-15b-unified-executor-v1" in document
     assert "阶段 13A 至 13E 已完成" in status
     assert "analyze_plot_item" in document
     assert "LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec" in document
     assert "Stage 14 已在后续完成" in status
-    assert "统一 geometry renderer 已完成 renderer 层渲染" in status
-    assert "仍未接入 `SceneRenderExecutor`、Actor、Controller 或 UI" in status
+    assert "Stage 15A 完成统一 renderer" in status
+    assert "SceneRenderExecutor 已统一 M1/M1.5 单项 manual production 链" in status
+    assert "Actor、Controller 或 UI" in status
     assert "Stage 15 仍未完成" in status
 
     assert "消费者尚未实现" not in limits_index

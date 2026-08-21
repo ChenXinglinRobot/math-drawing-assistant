@@ -1,7 +1,7 @@
 # 支持公式与横切契约
 
-文档版本：stage-15a-renderer-v1
-状态：阶段 13A 至 13E 与 Stage 14B 至 14E 已完成；直线、圆、椭圆、双曲线和四向平移抛物线已在同一单项 viewport/Builder/receipt/sampler 边界通过跨类型最终验收。P0-06 已关闭，Stage 14 已完成并允许进入 Stage 15；Stage 15A 统一 geometry renderer 已在 renderer 层完成（统一入口 + 旧入口兼容委托），但 `SceneRenderExecutor` 统一、Actor/Controller/UI 应用整合、P0-07、Stage 15 后续子步和核心 MVP 仍未完成。
+文档版本：stage-15b-unified-executor-v1
+状态：阶段 13A 至 13E、Stage 14B 至 14E 和 Stage 15A 已完成；Stage 15B 候选实施已把 `SceneRenderExecutor` 统一为 M1/M1.5 单项 manual production executor，六种 exact 类型统一进入 `render_sampled_curve_png`。既有 Actor/Controller/UI 文件未在 15B 修改，M1.5 真实组合证明属于 15C，GUI 闭环属于 15D；Stage 15、P0-07、正式性能、教材证据、checkpoint 和核心 MVP 均未完成。
 单一事实来源职责：本文件登记输入语法、转换表、token 白名单、limits 字段与当前值、稳定错误码及验收矩阵。限制数值的唯一可执行来源仍是 `math_drawing_assistant/config/limits.py`。
 
 ## 当前实现边界与正式生产调用图
@@ -38,7 +38,7 @@ PlotItemRequest
 → PlotItemSpec | ErrorInfo
 ```
 
-`analyze_plot_item` 是阶段 13 的正式单项分析边界：它不生成 `PlotSceneSpec`，不计算 viewport，也不执行 sampling 或 render。equation Spec 的 viewport、数值规划与参数化采样原型已由 Stage 14 完成；Stage 15A 已把六种 typed sampled output（显函数与直线、圆、椭圆、双曲线、抛物线）经统一 renderer 入口渲染为 Agg/PNG，但尚未接入 `SceneRenderExecutor`，executor 统一与应用整合属于尚未完成的 Stage 15 后续子步。阶段 6/7 的规范化、词法化、SourceMap、AST 和既有显函数 validation 语义不变，也不导入 SymPy 或执行数值求值、常量折叠、化简、展开、移项或求解。
+`analyze_plot_item` 是阶段 13 的正式单项分析边界：它不生成 `PlotSceneSpec`，不计算 viewport，也不执行 sampling 或 render。equation Spec 的 viewport、数值规划与参数化采样原型已由 Stage 14 完成；Stage 15A 已把六种 typed sampled output 经统一 renderer 入口渲染为 Agg/PNG，Stage 15B 再把该入口接入唯一 `SceneRenderExecutor`。Actor/Controller/UI 的真实组合与 GUI 闭环仍属于 15C/15D。阶段 6/7 的规范化、词法化、SourceMap、AST 和既有显函数 validation 语义不变，也不导入 SymPy 或执行数值求值、常量折叠、化简、展开、移项或求解。
 
 ## 字符与 token 白名单
 
@@ -730,7 +730,7 @@ NumericExecutionCost.max_live_float64_vectors
 ## M1.5 阶段 13 已实现范围
 
 <!-- STAGE_13_STATUS_START -->
-阶段 13A 至 13E 已完成。`analyze_plot_item` 是 M1.5 正式的单项 request-level 分析入口；既有 `analyze_explicit_function`、`classify_plot` 和 `ValidatedExplicitExpression` 保持兼容。阶段 13 本身不生成 `PlotSceneSpec`；Stage 14 已在后续完成 typed spec → `PlotSceneSpec` → viewport/Builder/receipt/sampling 原型；Stage 15A 的统一 geometry renderer 已完成 renderer 层渲染（六种 typed sampled output 均经统一入口输出 Agg/PNG，旧显函数入口保持原契约兼容委托），但仍未接入 `SceneRenderExecutor`、Actor、Controller 或 UI。Stage 15 仍未完成，核心 MVP 也未因阶段 13/14/15A 而完成。
+阶段 13A 至 13E 已完成。`analyze_plot_item` 是 M1.5 正式的单项 request-level 分析入口；既有 `analyze_explicit_function`、`classify_plot` 和 `ValidatedExplicitExpression` 保持兼容。阶段 13 本身不生成 `PlotSceneSpec`；Stage 14 已在后续完成 typed spec → `PlotSceneSpec` → viewport/Builder/receipt/sampling 原型；Stage 15A 完成统一 renderer，Stage 15B 中 SceneRenderExecutor 已统一 M1/M1.5 单项 manual production 链。既有 Actor、Controller 或 UI 文件未在 15B 修改，真实组合证明和 GUI 闭环仍分别属于 15C/15D。Stage 15 仍未完成，核心 MVP 也未因阶段 13/14/15A/15B 候选实施而完成。
 <!-- STAGE_13_STATUS_END -->
 
 当前实现接受仅含有理系数、总次数为 1 或 2 的方程，并以 bounded exact arithmetic 归一化为 primitive integer coefficients。它通过 typed `PlotKind` 路由交付下列非退化 Spec：一般直线 `LineSpec`，以及轴向平行的 `CircleSpec`、`EllipseSpec`、`HyperbolaSpec` 和 `ParabolaSpec`。
@@ -983,18 +983,28 @@ Stage 14E 新增跨类型矩阵，使用 exact `LineSpec | CircleSpec | EllipseS
 
 ### Stage 15A 统一 renderer 契约
 
-Stage 15A 在现有 `math_drawing_assistant/engine/renderer.py` 边界内把六种 exact 类型的 typed sampled output 统一渲染为 Agg/PNG。新公共入口 `render_sampled_curve_png(plan, sampling_outcome, *, cancellation_probe=None)` 与旧入口 `render_explicit_png` 委托同一实现核心：旧入口保持原显函数专用契约（几何 plan/outcome 按既有消息拒绝），两入口互不转发，`SceneRenderExecutor` 仍只调用旧入口，renderer 中不存在第二行为链。
+Stage 15A 在现有 `math_drawing_assistant/engine/renderer.py` 边界内把六种 exact 类型的 typed sampled output 统一渲染为 Agg/PNG。新公共入口 `render_sampled_curve_png(plan, sampling_outcome, *, cancellation_probe=None)` 与旧入口 `render_explicit_png` 委托同一实现核心：旧入口保持原显函数专用契约（几何 plan/outcome 按既有消息拒绝），两入口互不转发，renderer 中不存在第二行为链。15A 完成时 `SceneRenderExecutor` 仍只调用旧入口；15B 已将 production caller 收口为统一入口，旧 wrapper 当前无 production caller。
 
 校验顺序全部先于任何 Matplotlib 资源与 `BytesIO`：approval receipt 第一操作 → item plan 联合门（`ExplicitRenderItemPlan`；统一入口额外接受 `GeometryRenderItemPlan`，否则原消息 `approved render-plan item contract failed`）→ outcome 三分发（`ErrorInfo` item_id 一致性透传、`SamplingCancelled`→`RenderCancelled`、typed sampled 流）→ 几何流 provenance 门（既有 `_sampled_parameterized_curve_matches_approved_plan` helper；type 与 snapshot 两类拒绝合并为一条 `sampling outcome type mismatch`，与显函数两条消息的粒度不对称属既定取舍）→ 几何 render context（scene 恰一项、五类 exact geometry Spec 封闭集合、item_id 三方一致、limits 版本、legend 可用性）→ 几何 sampled 契约复验。最后一步先重跑 `SampledParameterizedCurve.__post_init__()`；该方法只检查 metadata 的 exact tuple/type、数量和 branch ID 非空，不会调用每个 metadata 的 `__post_init__()`，因此 renderer 随后逐项显式调用 `SampledSegmentMetadata.__post_init__()`，并要求获批 segments、ranges、metadata 三者数量完全相等，branch ID 与 closure 分别精确等于对应获批 segment，每个 range 长度精确等于对应 `segment.sample_count`，且 ranges 从 0 开始逐段连续并恰好覆盖全部 sampled points。provenance snapshot 不含当前 sampled metadata，不能替代这组事后篡改防线。任一失败统一映射为 `internal_error / sampled result contract validation failed`；零 ranges 篡改同样在资源前被拒绝，几何路径不由 renderer 合成 `no_visible_curve`（与 `ERROR_CODE_REGISTRY` 中该码的 sampler 来源登记不冲突：合法不可见只以上游 planner/sampler `ErrorInfo` 原样透传，显函数路径保留其既有零 ranges 防御行为）。`sampled result contract validation failed` 因此成为该既有消息在几何路径的第二发射点。
 
-P3-1 的冻结 AST 边界解析直接 `import`、`from ... import` 的 `as` 绑定以及模块 alias 的属性调用；renderer 的 sampler/analyzer/resolver/`RenderPlanBuilder` 禁止入口与两个 renderer 生产入口均按解析后的静态调用名检查。旧入口生产调用方必须仍仅为 `SceneRenderExecutor`，统一入口在 15A 必须无生产调用方。每种 import-alias 与 module-attribute 形式都有独立 synthetic 等值断言；合法 `matplotlib.backends.backend_agg` / `matplotlib.figure` import 保持放行。本规则不宣称覆盖名称重赋值、`getattr`、star import 或任意动态 Python；既有常量字符串 `importlib.import_module` / `__import__` 检查只覆盖已登记的模块边界。
+P3-1 的冻结 AST 边界解析直接 `import`、`from ... import` 的 `as` 绑定以及模块 alias 的属性调用；renderer 的 sampler/analyzer/resolver/`RenderPlanBuilder` 禁止入口与两个 renderer production entry 均按解析后的静态调用名检查。15B 只把 caller 期望改为：旧入口无 production caller，统一入口仅由 `scene_executor.py` 调用；其余 AST 扫描、自证、renderer singleton、contour/重依赖/反向依赖禁令保持不变。本规则不宣称覆盖名称重赋值、`getattr`、star import 或任意动态 Python；既有常量字符串 `importlib.import_module` / `__import__` 检查只覆盖已登记的模块边界。
 
 绘制契约与显函数路径同构：每段开头轮询取消（检查点序：资源前一次 → 资源创建 → 每 segment 前 → 编码前 → 编码后 → 返回前，满足既有 Agg actor probe 的 pass-poll 拓扑）；主段以冻结采样数组的零拷贝 view 绘制，双曲线分支、抛物线分段与多条圆弧互不误连；legend 取 `provenance.normalized_input` 且多 segment 只一个条目；EQUAL 视口固定 equal/box 且绘制后不漂移；编码沿用 `min(png_buffer_reserve_bytes, png_copy_bytes)` 上限、Agg 直连 `print_png`、签名 + IHDR 宽高校验；`finally` 全释放（buffer close → axes/figure clear → 引用置空）。
 
 CLOSED 圆/椭圆的视觉闭合由主段 N 点折线加一条独立 2 点闭合 chord artist 完成（数据为 `([x[stop-1], x[start]], [y[stop-1], y[start]])`，样式与主段一致、无 label、不产生 legend 条目）。闭合弦与相邻弦等角距（`minimum_closed_curve_samples = 64`），几何上与拼接成 N+1 点折线画出完全相同的线段集合；区别仅在两个 artist 交于共享端点的亚像素抗锯齿合成差异。内存口径（BC-15A-01）：chord 正式绘图数据为常量 4 个 float64 = 32 bytes/item（每 item 至多一个 CLOSED segment 由审批契约结构性保证），由 sampler 返回后不再存活的 `validation_workspace_bytes` 批处理阶段复用覆盖——该阶段预算在渲染期已死，32 bytes 落在其容量之内，自动化测试断言 `32 <= validation_workspace_bytes`；不引入任何 O(N) 拼接拷贝，不修改任何预算公式、limits、plan 或 sampler（`render_plan.py` 与 `parameterized_budget.py` 对 15A 只读）。此前「阶段 8C-1」关于库内不可观测分配不计入上界的豁免句在此仅作类比引用：chord 数据是项目自建并传入的第二份绘图数据，其覆盖依据是上述阶段复用论证而非该豁免句。
 
+### Stage 15B 统一 executor 与结果契约
+
+唯一 production 链为 `PlotSceneRequest → 单项/manual/requested-kind 门禁 → analyze_plot_item → PlotSceneSpec → resolve_single_item_viewport → RenderPlanBuilder.build → exact typed sampler → render_sampled_curve_png → PlotSceneResult`。`ExplicitFunctionSpec` 只允许 exact `ExplicitRenderItemPlan` 和 `sample_explicit_function`；`LineSpec | CircleSpec | EllipseSpec | HyperbolaSpec | ParabolaSpec` 只允许 exact `GeometryRenderItemPlan` 和 `sample_parameterized_curve`。Spec、plan、outcome 或 item identity 不一致一律形成绑定当前 item 的不可恢复 `internal_error`；不调用错误 sampler 或 renderer。`render_explicit_png` 保留公共兼容 wrapper，但不再有 production caller。
+
+结果以 `ConcretePlotType` 正交细分粗粒度 `PlotKind`：`EXPLICIT_FUNCTION`、`GENERAL_LINE`、`CIRCLE`、`ELLIPSE`、`HYPERBOLA`、`PARABOLA`。`PlotItemDiagnostics` 登记计划/实际采样点、sampled segment 和 visible segment；`PlotSceneDiagnostics` 登记计划/实际总采样点、获批 `memory_budget.total_bytes` 和最终 PNG byte count。production 成功必须携带完整 item/scene diagnostics；plan 成功后的 sampling failure 只保留 planned 部分，sampling 成功后的 render failure 保留完整采样诊断但不登记 PNG count。结果不携带 RenderPlan、receipt、NumPy array 或 Matplotlib 对象。
+
+warning 所有权固定为：viewport warning 只属于 scene，sampling warning 属于 item；scene 先 viewport 后 sampling，跨来源 code 稳定保留首次，同一 sampler outcome 内重复 code 是 `internal_error`。Builder 或 sampler 的 `no_visible_curve` 都是 typed scene/item failure，后续 renderer 不运行，也不生成空白成功 PNG。item 已知后的 ErrorInfo 必须精确绑定 item_id；缺失时复制补绑，冲突时改为绑定当前 item 的 `internal_error`，scene 与 item 共享同一 ErrorInfo 对象。
+
+`elapsed_ms` 使用单调高分辨率时钟并固定六阶段顺序：`request_validation`、`analysis`、`viewport_resolution`、`render_plan`、`sampling`、`rendering`；失败只保留到失败阶段的有序前缀。合法 `SamplingCancelled`/`RenderCancelled` 必须匹配当前 item，统一返回完全中性的无 error/item/viewport/warning/diagnostics/timing sentinel；错误 identity 不得伪装取消。该 timing 是运行诊断，不是 Stage 15F 正式性能证据。
+
 ### 明确未实现与门禁
 
-Stage 14E 已完成，P0-06 已关闭，Stage 14 已完成并允许进入 Stage 15。Stage 15-0 已冻结执行章程；Stage 15A 统一 geometry renderer 已在 renderer 层完成（统一入口 `render_sampled_curve_png` + 旧入口兼容委托、P3-1 生产边界测试、公开 API 哨兵与文档同步）。contour 后备链路、多 item、`SceneRenderExecutor` 统一、RenderActor/AppController/UI 整合仍未实现，Stage 15 后续子步（15B 起）尚未开始。
+Stage 14E 已完成，P0-06 已关闭，Stage 14 已完成并允许进入 Stage 15。Stage 15-0 已冻结执行章程；Stage 15A 统一 renderer 已完成；Stage 15B 统一 executor 与公共结果契约候选实施已完成，等待真正独立只读审核和总架构师验收。contour 后备链路、多 item、RenderActor/AppController/UI 的 M1.5 真实组合与 GUI 整合仍未实现；15C 及后续子步尚未开始。
 
 该结论不宣称 P0-07、真实教材验收、正式 P50/P95、M1.5 checkpoint 或核心 MVP 完成；这些仍受 Stage 15 及后续门禁约束。
